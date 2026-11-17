@@ -72,7 +72,7 @@ async function rpc(endpoint, body) {
   });
   if (!r.ok) {
     const txt = await r.text();
-    const scope = txt.match(/required scope '([^']+)'/)?.[1];
+    const scope = (txt.match(/required scope '([^']+)'/) || txt.match(/"required_scope":"([^"]+)"/))?.[1];
     const err = new Error(scope
       ? `Der Dropbox-App fehlt die Berechtigung „${scope}". Bitte in der Dropbox App Console unter Permissions aktivieren, dann in den Einstellungen Dropbox trennen und neu verbinden.`
       : `Dropbox ${endpoint}: ${txt}`);
