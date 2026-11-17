@@ -1,0 +1,549 @@
+import * as lock from './lock.js';
+import * as store from './store.js';
+import * as dbx from './dropbox.js';
+import * as c from './calc.js';
+import { CONFIG } from './config.js';
+import { ABSCHNITTE, SICHERHEIT_FELDER } from './felder.js';
+import { BERICHTE, erstelle } from './berichte.js';
+import { aufbereiten, formatiere, alsPDF, alsExcel, herunterladen } from './export.js';
+import { analysiere, analysierbar } from './analyse.js';
+
+const $ = (s, el = document) => el.querySelector(s);
+const main = () => $('#main');
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+const heute = () => c.isoDate(new Date());
+
+// ---------------- Hilfen ----------------
+function toast(text, art = '') {
+  const t = document.createElement('div');
+  t.className = 'toast ' + art;
+  t.textContent = text;
+  $('#toasts').appendChild(t);
+  setTimeout(() => t.remove(), art === 'fehler' ? 7000 : 3500);
+}
+async function versuch(fn, ok) {
+  try { const r = await fn(); if (ok) toast(ok); return r; } catch (e) { console.error(e); toast(e.message || String(e), 'fehler'); return undefined; }
+}
+function titelVon(v) {
+  return [v.art || v.kategorie, v.anbieter].filter(Boolean).join(' · ') || 'Vertrag';
+}
+function fristBadge(v) {
+  const sp = c.kuendigungSpaetestens(v);
+  if (!sp || v.status === 'gekündigt' || v.status === 'beendet') return '';
+  const t = c.tageBis(sp);
+  const cls = t < 0 ? 'grau' : t <= 31 ? 'rot' : t <= 62 ? 'gelb' : 'gruen';
+  return `<span class="badge ${cls}" title="Kündigung spätestens">${t < 0 ? 'Frist vorbei' : `Kündigen bis ${c.fmtDatum(sp)}`}</span>`;
+}
+
+// ---------------- Sperre ----------------
+function zeigeSperre() {
+  document.body.classList.add('gesperrt');
+  const neu = !lock.isSetUp();
+  main().innerHTML = `
+  <section class="sperre">
+    <img src="icons/icon-192.png" alt="" width="72" height="72">
+    <h1>Vertragsverwaltung</h1>
+    ${neu ? `
+      <p>Lege ein Passwort für diese App auf diesem Gerät fest. Danach kannst du Face ID bzw. Touch ID einrichten.</p>
+      <form id="f-setup" class="karte">
+        <label>Passwort<input type="password" name="pw" autocomplete="new-password" minlength="8" required></label>
+        <label>Passwort wiederholen<input type="password" name="pw2" autocomplete="new-password" required></label>
+        <button class="primaer">Einrichten</button>
+      </form>` : `
+      <form id="f-unlock" class="karte">
+        ${lock.hasPasskey() ? '<button type="button" id="b-faceid" class="primaer gross">Mit Face ID entsperren</button><div class="oder">oder</div>' : ''}
+        <label>Passwort<input type="password" name="pw" autocomplete="current-password" required></label>
+        <button class="${lock.hasPasskey() ? '' : 'primaer'}">Entsperren</button>
+      </form>
+      <button class="link" id="b-reset">Passwort vergessen? App auf diesem Gerät zurücksetzen</button>`}
+  </section>`;
+  if (neu) {
+    $('#f-setup').onsubmit = async (e) => {
+      e.preventDefault();
+      const f = new FormData(e.target);
+      if (f.get('pw') !== f.get('pw2')) return toast('Die Passwörter stimmen nicht überein.', 'fehler');
+      await versuch(async () => { await lock.setup(f.get('pw')); await nachEntsperren(true); });
+    };
+  } else {
+    $('#f-unlock').onsubmit = async (e) => {
+      e.preventDefault();
+      await versuch(async () => { await lock.unlockPassword(new FormData(e.target).get('pw')); await nachEntsperren(); });
+    };
+    const fb = $('#b-faceid');
+    if (fb) fb.onclick = () => versuch(async () => { await lock.unlockPasskey(); await nachEntsperren(); });
+    $('#b-reset').onclick = () => {
+      if (confirm('Alle lokal gespeicherten Zugänge auf diesem Gerät löschen? Deine Verträge in der Dropbox bleiben erhalten.')) { lock.reset(); location.reload(); }
+    };
+  }
+}
+
+async function nachEntsperren(ersteinrichtung = false) {
+  document.body.classList.remove('gesperrt');
+  await store.ladeEinstellungen();
+  // Rückkehr von der Dropbox-Anmeldung?
+  const neu = await versuch(() => dbx.finishLogin());
+  if (neu) { await store.setzeEinstellung('dropbox', neu); toast('Dropbox verbunden.'); }
+  await store.ladeCache();
+  if (ersteinrichtung && lock.passkeySupported()) location.hash = '#/einstellungen';
+  route();
+  if (dbx.isConnected()) {
+    await versuch(() => store.synchronisiere());
+    route();
+    pruefeErinnerungen();
+    store.kalenderAktualisieren().catch(() => {});
+  }
+}
+
+let verstecktSeit = 0;
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) verstecktSeit = Date.now();
+  else if (lock.isUnlocked() && verstecktSeit && Date.now() - verstecktSeit > 5 * 60000) { lock.lock(); zeigeSperre(); }
+});
+
+// ---------------- Erinnerungen in der App ----------------
+function faelligeErinnerungen() {
+  const h = new Date();
+  return store.state.vertraege.filter((v) => v.status !== 'gekündigt' && v.status !== 'beendet').map((v) => ({ v, er: c.erinnerungsdatum(v, h), sp: c.kuendigungSpaetestens(v, h) }))
+    .filter((x) => x.er && x.er <= h && x.sp >= c.parseDate(h));
+}
+function pruefeErinnerungen() {
+  if (!('Notification' in window) || Notification.permission !== 'granted') return;
+  const gezeigt = JSON.parse(localStorage.getItem('vv.notified') || '{}');
+  for (const { v, sp } of faelligeErinnerungen()) {
+    const key = v.id + c.isoDate(sp);
+    if (gezeigt[key] === heute()) continue;
+    navigator.serviceWorker?.ready.then((reg) => reg.showNotification('Kündigungsfrist läuft ab', {
+      body: `${titelVon(v)}: Kündigung bis ${c.fmtDatum(sp)}`, tag: key, icon: 'icons/icon-192.png', data: { url: `#/vertrag/${v.id}` },
+    }));
+    gezeigt[key] = heute();
+  }
+  localStorage.setItem('vv.notified', JSON.stringify(gezeigt));
+}
+
+// ---------------- Router ----------------
+const ROUTES = {
+  '': uebersicht, uebersicht, vertraege: liste, vertrag: detail, bearbeiten: bearbeiten, neu: () => bearbeiten(null),
+  auswertungen, auswertung: auswertung, eingang, einstellungen,
+};
+function route() {
+  if (!lock.isUnlocked()) return zeigeSperre();
+  const [, name = '', arg] = decodeURIComponent(location.hash).split('/');
+  for (const a of document.querySelectorAll('nav a')) a.classList.toggle('aktiv', a.getAttribute('href') === `#/${name || 'uebersicht'}`);
+  $('#demo-hinweis').hidden = !store.state.demo;
+  (ROUTES[name] || uebersicht)(arg);
+  window.scrollTo(0, 0);
+}
+window.addEventListener('hashchange', route);
+
+// ---------------- Übersicht ----------------
+function uebersicht() {
+  const vs = store.state.vertraege.filter((v) => v.status !== 'beendet');
+  const jahres = vs.reduce((a, v) => a + (c.jahresbeitrag(v) || 0), 0);
+  const restschuld = vs.filter((v) => v.kategorie === 'Darlehen').reduce((a, v) => a + c.restschuld(v), 0);
+  const fristen = vs.map((v) => ({ v, sp: c.kuendigungSpaetestens(v) })).filter((x) => x.sp && x.v.status !== 'gekündigt' && c.tageBis(x.sp) >= 0 && c.tageBis(x.sp) <= 120)
+    .sort((a, b) => a.sp - b.sp);
+  const pruefen = vs.filter((v) => v.pruefen);
+  const proKat = {};
+  for (const v of vs) proKat[v.kategorie] = (proKat[v.kategorie] || 0) + 1;
+  main().innerHTML = `
+    <h1>Übersicht</h1>
+    <div class="kpis">
+      <div class="kpi"><span>Aktive Verträge</span><b>${vs.length}</b></div>
+      <div class="kpi"><span>Beiträge pro Jahr</span><b>${c.fmtEuro(jahres)}</b><small>Ø ${c.fmtEuro(jahres / 12)} im Monat</small></div>
+      <div class="kpi"><span>Restschuld Darlehen</span><b>${c.fmtEuro(restschuld)}</b></div>
+      <div class="kpi ${fristen.some((f) => c.tageBis(f.sp) <= 31) ? 'warn' : ''}"><span>Fristen in 120 Tagen</span><b>${fristen.length}</b></div>
+    </div>
+    ${pruefen.length ? `<div class="karte hinweis"><b>${pruefen.length} neu analysierte Verträge bitte prüfen:</b>
+      <ul>${pruefen.map((v) => `<li><a href="#/vertrag/${v.id}">${esc(titelVon(v))}</a></li>`).join('')}</ul></div>` : ''}
+    <div class="raster2">
+      <section class="karte">
+        <h2>Anstehende Kündigungsfristen</h2>
+        ${fristen.length ? `<ul class="liste">${fristen.map(({ v, sp }) => `
+          <li><a href="#/vertrag/${v.id}"><span>${esc(titelVon(v))}<small>${esc(v.objekt || v.kennzeichen || v.vertragsnummer || '')}</small></span>
+          ${fristBadge(v)}</a></li>`).join('')}</ul>` : '<p class="leer">Keine Fristen in den nächsten 120 Tagen.</p>'}
+      </section>
+      <section class="karte">
+        <h2>Verträge nach Kategorie</h2>
+        <ul class="liste">${Object.entries(proKat).sort().map(([k, n]) => `<li><a href="#/vertraege/${encodeURIComponent(k)}"><span>${esc(k)}</span><b>${n}</b></a></li>`).join('') || '<p class="leer">Noch keine Verträge.</p>'}</ul>
+      </section>
+    </div>`;
+}
+
+// ---------------- Vertragsliste ----------------
+let filter = { q: '', kat: '', gruppe: '', sort: 'titel' };
+function suchtext(v) {
+  return JSON.stringify(v).toLowerCase();
+}
+function liste(kat) {
+  if (kat !== undefined) filter.kat = kat;
+  const alle = store.state.vertraege;
+  const kats = [...new Set(alle.map((v) => v.kategorie).filter(Boolean))].sort();
+  main().innerHTML = `
+    <div class="kopf"><h1>Verträge</h1><a class="knopf primaer" href="#/neu">+ Neu</a></div>
+    <div class="filter">
+      <input type="search" id="q" placeholder="Suchen: Nummer, Anbieter, Objekt, Kennzeichen, Zähler …" value="${esc(filter.q)}">
+      <div class="chips">${['', ...kats].map((k) => `<button class="chip ${filter.kat === k ? 'an' : ''}" data-kat="${esc(k)}">${esc(k || 'Alle')}</button>`).join('')}</div>
+      <div class="zeile">
+        <label>Gruppieren<select id="gruppe">${[['', 'keine'], ['kategorie', 'Kategorie'], ['art', 'Art'], ['objekt', 'Objekt'], ['anbieter', 'Anbieter']].map(([k, l]) => `<option value="${k}" ${filter.gruppe === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+        <label>Sortieren<select id="sort">${[['titel', 'Art / Anbieter'], ['frist', 'Kündigungsfrist'], ['beitrag', 'Jahresbeitrag'], ['objekt', 'Objekt']].map(([k, l]) => `<option value="${k}" ${filter.sort === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+        <label class="check"><input type="checkbox" id="beendet" ${filter.beendet ? 'checked' : ''}> beendete zeigen</label>
+      </div>
+    </div>
+    <div id="treffer"></div>`;
+  const zeichnen = () => {
+    const q = filter.q.toLowerCase().split(/\s+/).filter(Boolean);
+    let vs = alle.filter((v) => (!filter.kat || v.kategorie === filter.kat) && (filter.beendet || v.status !== 'beendet') && q.every((w) => suchtext(v).includes(w)));
+    const sorter = {
+      titel: (a, b) => titelVon(a).localeCompare(titelVon(b), 'de'),
+      frist: (a, b) => (c.kuendigungSpaetestens(a) || 9e15) - (c.kuendigungSpaetestens(b) || 9e15),
+      beitrag: (a, b) => (c.jahresbeitrag(b) || 0) - (c.jahresbeitrag(a) || 0),
+      objekt: (a, b) => String(a.objekt || a.kennzeichen || '~').localeCompare(String(b.objekt || b.kennzeichen || '~'), 'de'),
+    }[filter.sort];
+    vs = vs.sort(sorter);
+    const gruppen = new Map();
+    for (const v of vs) {
+      const g = filter.gruppe ? (v[filter.gruppe] || (filter.gruppe === 'objekt' && v.kennzeichen) || '(ohne Angabe)') : '';
+      if (!gruppen.has(g)) gruppen.set(g, []);
+      gruppen.get(g).push(v);
+    }
+    const summe = vs.reduce((a, v) => a + (c.jahresbeitrag(v) || 0), 0);
+    $('#treffer').innerHTML = `<p class="info">${vs.length} Verträge · Jahresbeiträge ${c.fmtEuro(summe)}</p>` +
+      [...gruppen.entries()].sort((a, b) => a[0].localeCompare(b[0], 'de')).map(([g, items]) => `
+        ${g ? `<h3 class="gruppe">${esc(g)} <small>${items.length} · ${c.fmtEuro(items.reduce((a, v) => a + (c.jahresbeitrag(v) || 0), 0))} p. a.</small></h3>` : ''}
+        <div class="karten">${items.map(vertragKarte).join('')}</div>`).join('') || '<p class="leer">Keine Treffer.</p>';
+  };
+  zeichnen();
+  $('#q').oninput = (e) => { filter.q = e.target.value; zeichnen(); };
+  $('#gruppe').onchange = (e) => { filter.gruppe = e.target.value; zeichnen(); };
+  $('#sort').onchange = (e) => { filter.sort = e.target.value; zeichnen(); };
+  $('#beendet').onchange = (e) => { filter.beendet = e.target.checked; zeichnen(); };
+  for (const b of document.querySelectorAll('.chip')) b.onclick = () => { filter.kat = b.dataset.kat; liste(); };
+}
+
+function vertragKarte(v) {
+  const jb = c.jahresbeitrag(v);
+  const d = v.darlehen;
+  return `<a class="vkarte ${v.status === 'beendet' ? 'aus' : ''}" href="#/vertrag/${v.id}">
+    <div class="vk-kopf"><span class="kat">${esc(v.kategorie || '')}</span>${v.pruefen ? '<span class="badge blau">prüfen</span>' : ''}${v.status === 'gekündigt' ? '<span class="badge grau">gekündigt</span>' : ''}</div>
+    <b>${esc(titelVon(v))}</b>
+    <small>${esc([v.vertragsnummer && 'Nr. ' + v.vertragsnummer, v.kennzeichen, v.objekt].filter(Boolean).join(' · '))}</small>
+    <div class="vk-fuss">
+      ${d ? `<span>Restschuld ${c.fmtEuro(c.restschuld(v))}</span>` : jb ? `<span>${c.fmtEuro(c.num(v.beitrag))} ${esc(v.beitrag_rhythmus || '')}</span>` : '<span></span>'}
+      ${fristBadge(v)}
+    </div>
+  </a>`;
+}
+
+// ---------------- Detail ----------------
+function feldWert(f, wert) {
+  if (wert === null || wert === undefined || wert === '') return '';
+  return f.typ === 'euro' ? c.fmtEuro(c.num(wert)) : f.typ === 'datum' ? c.fmtDatum(wert) : f.typ === 'prozent' ? c.fmtProzent(wert) : esc(wert);
+}
+
+function detail(id) {
+  const v = store.state.vertraege.find((x) => x.id === id);
+  if (!v) { main().innerHTML = '<p class="leer">Vertrag nicht gefunden.</p>'; return; }
+  const sp = c.kuendigungSpaetestens(v);
+  const termin = c.naechsterKuendigungstermin(v);
+  const a = v.analyse || {};
+  const abschnitte = ABSCHNITTE.filter((s) => !s.wenn || s.wenn(v)).map((s) => {
+    const quelle = s.pfad ? v[s.pfad] || {} : v;
+    const zeilen = s.felder.filter((f) => (!f.wenn || f.wenn(v)) && quelle[f.k] !== undefined && quelle[f.k] !== null && quelle[f.k] !== '')
+      .map((f) => `<dt>${esc(f.label)}</dt><dd>${feldWert(f, quelle[f.k])}</dd>`).join('');
+    return zeilen ? `<section class="karte"><h2>${esc(s.titel)}</h2><dl>${zeilen}</dl></section>` : '';
+  }).join('');
+  const zusatz = v.zusatzfelder && Object.keys(v.zusatzfelder).length
+    ? `<section class="karte"><h2>Weitere Angaben</h2><dl>${Object.entries(v.zusatzfelder).map(([k, w]) => `<dt>${esc(k)}</dt><dd>${esc(typeof w === 'object' ? JSON.stringify(w) : w)}</dd>`).join('')}</dl></section>` : '';
+  const sich = v.darlehen?.sicherheiten?.length ? `<section class="karte breit"><h2>Sicherheiten</h2><div class="tabelle"><table>
+      <thead><tr>${SICHERHEIT_FELDER.map((f) => `<th>${f.label}</th>`).join('')}</tr></thead>
+      <tbody>${v.darlehen.sicherheiten.map((s) => `<tr>${SICHERHEIT_FELDER.map((f) => `<td class="${f.typ === 'euro' ? 'r' : ''}">${feldWert(f, s[f.k])}</td>`).join('')}</tr>`).join('')}</tbody></table></div></section>` : '';
+  let plan = '';
+  if (v.kategorie === 'Darlehen' || v.kategorie === 'Leasing') {
+    const p = c.tilgungsplan(v);
+    const b = c.laufzeitBaender(v);
+    const jahre = new Map();
+    for (const z of p) {
+      const j = z.datum.getFullYear();
+      const e = jahre.get(j) || { zins: 0, tilgung: 0, rest: 0 };
+      e.zins += z.zins; e.tilgung += z.tilgung; e.rest = z.rest;
+      jahre.set(j, e);
+    }
+    plan = `<section class="karte breit"><h2>Tilgungsplan und Restlaufzeiten</h2>
+      <div class="kpis klein">
+        <div class="kpi"><span>Restlaufzeit bis 1 Jahr</span><b>${c.fmtEuro(b.bis1)}</b></div>
+        <div class="kpi"><span>1 bis 5 Jahre</span><b>${c.fmtEuro(b.bis5)}</b></div>
+        <div class="kpi"><span>über 5 Jahre</span><b>${c.fmtEuro(b.ueber5)}</b></div>
+        <div class="kpi"><span>Zinsen nächste 12 Monate</span><b>${c.fmtEuro(b.zins12)}</b></div>
+      </div>
+      ${jahre.size ? `<div class="tabelle"><table><thead><tr><th>Jahr</th><th class="r">Zinsen</th><th class="r">Tilgung</th><th class="r">Restschuld Jahresende</th></tr></thead>
+      <tbody>${[...jahre.entries()].map(([j, e]) => `<tr><td>${j}</td><td class="r">${c.fmtEuro(e.zins)}</td><td class="r">${c.fmtEuro(e.tilgung)}</td><td class="r">${c.fmtEuro(e.rest)}</td></tr>`).join('')}</tbody></table></div>` : '<p class="leer">Für einen Tilgungsplan Restschuld, Zinssatz und Rate erfassen.</p>'}
+    </section>`;
+  }
+  main().innerHTML = `
+    <div class="kopf"><a href="#/vertraege" class="zurueck">‹ Verträge</a>
+      <div class="aktionen"><a class="knopf" href="#/bearbeiten/${v.id}">Bearbeiten</a></div></div>
+    <h1>${esc(titelVon(v))}</h1>
+    <p class="untertitel">${esc([v.kategorie, v.vertragsnummer && 'Nr. ' + v.vertragsnummer, v.objekt || v.kennzeichen].filter(Boolean).join(' · '))} ${fristBadge(v)}</p>
+    ${v.pruefen ? `<div class="karte hinweis">Automatisch erfasst. Bitte Angaben prüfen. <button id="b-geprueft" class="primaer">Geprüft</button></div>` : ''}
+    ${sp ? `<div class="karte frist"><div><span>Kündigung spätestens</span><b>${c.fmtDatum(sp)}</b></div><div><span>Vertragsablauf</span><b>${c.fmtDatum(termin)}</b></div><div><span>Erinnerung</span><b>${c.fmtDatum(c.erinnerungsdatum(v))}</b></div></div>` : ''}
+    ${a.zusammenfassung || a.kritisch?.length || a.verbesserungen?.length ? `
+      <section class="karte analyse">
+        <h2>Analyse</h2>
+        ${a.zusammenfassung ? `<p>${esc(a.zusammenfassung)}</p>` : ''}
+        ${a.kritisch?.length ? `<h3 class="rot">Kritisch</h3><ul>${a.kritisch.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}
+        ${a.verbesserungen?.length ? `<h3 class="gruen">Verbesserungsvorschläge</h3><ul>${a.verbesserungen.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}
+        ${a.vollstaendigkeit ? `<p class="info">Fehlende Angaben: ${esc(a.vollstaendigkeit)}</p>` : ''}
+      </section>` : ''}
+    <div class="raster2">${abschnitte}${zusatz}</div>
+    ${sich}${plan}
+    <div class="aktionen unten">
+      ${v.quelldatei ? '<button id="b-doc">Originaldokument öffnen</button>' : ''}
+      ${v.status !== 'gekündigt' ? '<button id="b-gek">Als gekündigt markieren</button>' : ''}
+      <button id="b-del" class="gefahr">Löschen</button>
+    </div>`;
+  const setz = async (patch, msg) => { Object.assign(v, patch); await versuch(() => store.speichere(v), msg); detail(id); };
+  $('#b-geprueft') && ($('#b-geprueft').onclick = () => setz({ pruefen: false }, 'Gespeichert.'));
+  $('#b-gek') && ($('#b-gek').onclick = () => setz({ status: 'gekündigt', gekuendigt_am: heute() }, 'Als gekündigt markiert.'));
+  $('#b-doc') && ($('#b-doc').onclick = () => versuch(async () => window.open(await dbx.temporaryLink(v.quelle_id || v.quelldatei), '_blank')));
+  $('#b-del').onclick = async () => {
+    if (!confirm('Diesen Vertrag aus der Liste löschen? (Das Originaldokument bleibt in der Dropbox.)')) return;
+    await versuch(() => store.loesche(v), 'Gelöscht.');
+    location.hash = '#/vertraege';
+  };
+}
+
+// ---------------- Bearbeiten ----------------
+function eingabe(f, wert, name) {
+  const n = name || f.k;
+  const w = wert ?? '';
+  if (f.typ === 'auswahl') return `<select name="${n}"><option value=""></option>${f.werte.map((x) => `<option ${x === w ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select>`;
+  if (f.typ === 'textlang') return `<textarea name="${n}" rows="3">${esc(w)}</textarea>`;
+  if (f.typ === 'datum') return `<input type="date" name="${n}" value="${esc(String(w).slice(0, 10))}">`;
+  if (['euro', 'zahl', 'prozent'].includes(f.typ)) return `<input inputmode="decimal" name="${n}" value="${esc(w === '' ? '' : String(w).replace('.', ','))}">`;
+  return `<input name="${n}" value="${esc(w)}" ${f.vorschlaege ? `list="dl-${f.k}"` : ''}>${f.vorschlaege ? `<datalist id="dl-${f.k}">${f.vorschlaege.map((x) => `<option value="${esc(x)}">`).join('')}</datalist>` : ''}`;
+}
+
+function bearbeiten(id) {
+  const orig = id ? store.state.vertraege.find((x) => x.id === id) : null;
+  const v = orig ? structuredClone(orig) : { kategorie: 'Versicherung', status: 'aktiv' };
+  const zeichnen = () => {
+    main().innerHTML = `
+      <div class="kopf"><a href="${orig ? `#/vertrag/${orig.id}` : '#/vertraege'}" class="zurueck">‹ Abbrechen</a></div>
+      <h1>${orig ? 'Vertrag bearbeiten' : 'Neuer Vertrag'}</h1>
+      <form id="f-v" class="formular">
+        ${ABSCHNITTE.filter((s) => !s.wenn || s.wenn(v)).map((s) => `<fieldset><legend>${esc(s.titel)}</legend><div class="felder">
+          ${s.felder.filter((f) => !f.wenn || f.wenn(v)).map((f) => `<label class="${f.typ === 'textlang' ? 'breit' : ''}">${esc(f.label)}${eingabe(f, s.pfad ? v[s.pfad]?.[f.k] : v[f.k], s.pfad ? `${s.pfad}.${f.k}` : f.k)}</label>`).join('')}
+        </div></fieldset>`).join('')}
+        ${v.kategorie === 'Darlehen' || v.kategorie === 'Leasing' ? `<fieldset><legend>Sicherheiten</legend>
+          <div id="sich">${(v.darlehen?.sicherheiten || []).map((s, i) => `<div class="felder sicherheit">${SICHERHEIT_FELDER.map((f) => `<label>${f.label}${eingabe(f, s[f.k], `s${i}.${f.k}`)}</label>`).join('')}
+            <button type="button" class="link gefahr" data-weg="${i}">entfernen</button></div>`).join('')}</div>
+          <button type="button" id="b-sich">+ Sicherheit hinzufügen</button></fieldset>` : ''}
+        <fieldset><legend>Analyse</legend><div class="felder">
+          <label class="breit">Zusammenfassung<textarea name="a.zusammenfassung" rows="3">${esc(v.analyse?.zusammenfassung)}</textarea></label>
+          <label class="breit">Kritische Punkte (je Zeile einer)<textarea name="a.kritisch" rows="3">${esc((v.analyse?.kritisch || []).join('\n'))}</textarea></label>
+          <label class="breit">Verbesserungsvorschläge (je Zeile einer)<textarea name="a.verbesserungen" rows="3">${esc((v.analyse?.verbesserungen || []).join('\n'))}</textarea></label>
+        </div></fieldset>
+        <div class="aktionen unten"><button class="primaer">Speichern</button></div>
+      </form>`;
+    const form = $('#f-v');
+    form.kategorie.onchange = () => { lesen(); zeichnen(); };
+    form.art.onchange = () => { lesen(); zeichnen(); };
+    $('#b-sich') && ($('#b-sich').onclick = () => { lesen(); v.darlehen = v.darlehen || {}; (v.darlehen.sicherheiten ||= []).push({ art: 'Grundschuld', objekt: v.objekt }); zeichnen(); });
+    for (const b of document.querySelectorAll('[data-weg]')) b.onclick = () => { lesen(); v.darlehen.sicherheiten.splice(+b.dataset.weg, 1); zeichnen(); };
+    form.onsubmit = async (e) => {
+      e.preventDefault();
+      lesen();
+      const gesp = await versuch(() => store.speichere(v), 'Gespeichert.');
+      if (gesp) location.hash = `#/vertrag/${gesp.id}`;
+    };
+  };
+  const typen = {};
+  for (const s of ABSCHNITTE) for (const f of s.felder) typen[(s.pfad ? s.pfad + '.' : '') + f.k] = f.typ;
+  for (const f of SICHERHEIT_FELDER) typen['s.' + f.k] = f.typ;
+  const lesen = () => {
+    const fd = new FormData($('#f-v'));
+    const sich = [];
+    v.analyse = v.analyse || {};
+    for (const [k, roh] of fd.entries()) {
+      const wert = String(roh).trim();
+      let typ = typen[k];
+      const m = k.match(/^s(\d+)\.(.+)$/);
+      if (m) typ = typen['s.' + m[2]];
+      const val = wert === '' ? null : ['euro', 'zahl', 'prozent'].includes(typ) ? c.num(wert) : wert;
+      if (m) { (sich[+m[1]] ||= {})[m[2]] = val; continue; }
+      if (k.startsWith('a.')) { const ak = k.slice(2); v.analyse[ak] = ak === 'zusammenfassung' ? val : (wert ? wert.split('\n').map((x) => x.trim()).filter(Boolean) : []); continue; }
+      if (k.includes('.')) { const [p, kk] = k.split('.'); (v[p] ||= {})[kk] = val; continue; }
+      v[k] = val;
+    }
+    if (document.querySelector('#sich')) { v.darlehen = v.darlehen || {}; v.darlehen.sicherheiten = sich.filter(Boolean); }
+  };
+  zeichnen();
+}
+
+// ---------------- Auswertungen ----------------
+function auswertungen() {
+  const gruppen = [
+    ['Verträge', ['alle', 'versicherungen', 'versicherungen_objekt', 'kfz', 'gebaeude', 'energie', 'beitraege', 'fristen']],
+    ['Finanzierung (Jahresabschluss)', ['verbindlichkeiten', 'sicherheiten', 'restlaufzeiten']],
+  ];
+  main().innerHTML = `<h1>Auswertungen</h1>
+    ${gruppen.map(([t, keys]) => `<h3 class="gruppe">${t}</h3><div class="karten">${keys.map((k) => {
+      const b = erstelle(k, store.state.vertraege);
+      return `<a class="vkarte" href="#/auswertung/${k}"><b>${esc(BERICHTE[k].titel)}</b><small>${b.zeilen.length} Einträge</small><div class="vk-fuss"><span>PDF · Excel</span></div></a>`;
+    }).join('')}</div>`).join('')}`;
+}
+
+let stichtag = null;
+function auswertung(key) {
+  if (!BERICHTE[key]) return auswertungen();
+  const mitStichtag = ['restlaufzeiten', 'verbindlichkeiten', 'fristen'].includes(key);
+  const st = stichtag || (key === 'restlaufzeiten' ? `${new Date().getFullYear() - (new Date().getMonth() < 3 ? 1 : 0)}-12-31` : heute());
+  let q = '';
+  const bauen = () => {
+    const b = erstelle(key, store.state.vertraege, mitStichtag ? st : new Date());
+    if (q) { const w = q.toLowerCase(); b.zeilen = b.zeilen.filter((z) => JSON.stringify({ ...z, v: undefined }).toLowerCase().includes(w)); b.untertitel = [b.untertitel, `Filter: „${q}“`].filter(Boolean).join(' · '); }
+    return b;
+  };
+  main().innerHTML = `
+    <div class="kopf"><a href="#/auswertungen" class="zurueck">‹ Auswertungen</a></div>
+    <h1>${esc(BERICHTE[key].titel)}</h1>
+    <div class="filter zeile">
+      <input type="search" id="q" placeholder="Filtern …">
+      ${mitStichtag ? `<label>Stichtag<input type="date" id="st" value="${st}"></label>` : ''}
+      <button id="b-pdf" class="primaer">PDF</button><button id="b-xls" class="primaer">Excel</button>
+      ${dbx.isConnected() ? '<label class="check"><input type="checkbox" id="ablage" checked> in Dropbox ablegen</label>' : ''}
+    </div>
+    <div id="tab"></div>`;
+  const zeichnen = () => {
+    const b = bauen();
+    const rows = aufbereiten(b);
+    $('#tab').innerHTML = (b.untertitel ? `<p class="info">${esc(b.untertitel)}</p>` : '') + `<div class="tabelle"><table>
+      <thead><tr>${b.spalten.map((s) => `<th class="${['euro', 'zahl', 'prozent'].includes(s.typ) ? 'r' : ''}">${esc(s.label)}</th>`).join('')}</tr></thead>
+      <tbody>${rows.map((r) => r._typ === 'gruppe' ? `<tr class="g"><td colspan="${b.spalten.length}">${esc(r.titel)} (${r.anzahl})</td></tr>`
+        : `<tr class="${r._typ || ''}">${b.spalten.map((s, i) => `<td class="${['euro', 'zahl', 'prozent'].includes(s.typ) ? 'r' : ''}">${r._typ && i === 0 ? (r._typ === 'summe' ? 'Summe' : 'Zwischensumme')
+          : r.v && i === 0 ? `<a href="#/vertrag/${r.v.id}">${esc(formatiere(r[s.k], s.typ))}</a>` : r.id && i === 0 ? `<a href="#/vertrag/${r.id}">${esc(formatiere(r[s.k], s.typ) || '–')}</a>` : esc(formatiere(r[s.k], s.typ))}</td>`).join('')}</tr>`).join('')}
+      </tbody></table></div>${rows.length ? '' : '<p class="leer">Keine Einträge.</p>'}${b.fussnote ? `<p class="info">${esc(b.fussnote)}</p>` : ''}`;
+  };
+  zeichnen();
+  $('#q').oninput = (e) => { q = e.target.value; zeichnen(); };
+  if (mitStichtag) $('#st').onchange = (e) => { stichtag = e.target.value; auswertung(key); };
+  const exp = (fn) => versuch(async () => {
+    const datei = await fn(bauen());
+    herunterladen(datei);
+    if ($('#ablage')?.checked) { const p = await store.exportAblegen(datei.name, datei.blob); if (p) toast('In Dropbox abgelegt: ' + p); }
+  });
+  $('#b-pdf').onclick = () => exp(alsPDF);
+  $('#b-xls').onclick = () => exp(alsExcel);
+}
+
+// ---------------- Eingang (neue Dokumente) ----------------
+async function eingang() {
+  main().innerHTML = `<h1>Eingang</h1>
+    <p class="info">Neue Verträge legst du in der Dropbox im Ordner <b>${esc(CONFIG.eingang)}</b> ab (PDF oder Foto, gern auch in Unterordnern).
+    Sie werden jeden Morgen automatisch analysiert. Hier kannst du sie sofort analysieren lassen.</p>
+    <div id="eing"><p class="leer">Lade …</p></div>`;
+  if (!dbx.isConnected()) { $('#eing').innerHTML = '<p class="leer">Bitte zuerst in den Einstellungen die Dropbox verbinden.</p>'; return; }
+  const docs = await versuch(() => store.offeneDokumente());
+  if (!docs) return;
+  const key = store.state.einstellungen.anthropicKey;
+  $('#eing').innerHTML = docs.length ? `
+    ${key ? `<button id="b-alle" class="primaer">Alle ${docs.length} jetzt analysieren</button>` : `<div class="karte hinweis">Für die Sofort-Analyse in den <a href="#/einstellungen">Einstellungen</a> einen Anthropic-API-Schlüssel hinterlegen. Ohne Schlüssel übernimmt der tägliche Lauf.</div>`}
+    <ul class="liste">${docs.map((d, i) => `<li class="doc" data-i="${i}"><span>${esc(d.name)}<small>${esc(d.path_display.slice(CONFIG.eingang.length + 1))} · ${(d.size / 1024).toFixed(0)} KB · ${c.fmtDatum(d.server_modified)}</small></span>
+      <span class="aktionen">${key && analysierbar(d.name) ? `<button data-a="${i}">Analysieren</button>` : ''}<button data-m="${i}">Manuell</button></span></li>`).join('')}</ul>`
+    : '<p class="leer">Keine neuen Dokumente. Alles erfasst.</p>';
+  const einzeln = async (i) => {
+    const d = docs[i];
+    const li = document.querySelector(`li[data-i="${i}"]`);
+    li.classList.add('laeuft');
+    li.querySelector('.aktionen').innerHTML = '<span class="spinner"></span> analysiere …';
+    try {
+      const blob = await dbx.download(d.path_lower);
+      const ergebnisse = await analysiere(blob, d.name, key, CONFIG.modell);
+      const gespeichert = [];
+      for (const [n, e] of ergebnisse.entries()) {
+        gespeichert.push(await store.speichere({ ...e, id: store.idAusDokument(d.id, n), erstellt: new Date().toISOString(), status: 'aktiv', pruefen: true, quelldatei: d.path_display, quelle_id: d.id, analysiert_am: new Date().toISOString(), analysiert_von: 'App' }));
+      }
+      li.querySelector('.aktionen').innerHTML = gespeichert.map((v) => `<a class="knopf" href="#/vertrag/${v.id}">${esc(titelVon(v))}</a>`).join('');
+      li.classList.replace('laeuft', 'fertig');
+    } catch (e) {
+      li.classList.remove('laeuft');
+      li.querySelector('.aktionen').innerHTML = `<span class="rot">${esc(e.message)}</span>`;
+    }
+  };
+  for (const b of document.querySelectorAll('[data-a]')) b.onclick = () => einzeln(+b.dataset.a);
+  for (const b of document.querySelectorAll('[data-m]')) b.onclick = async () => {
+    const d = docs[+b.dataset.m];
+    const v = await versuch(() => store.speichere({ id: store.idAusDokument(d.id, 0), erstellt: new Date().toISOString(), kategorie: 'Sonstiges', status: 'aktiv', anbieter: d.name.replace(/\.[^.]+$/, ''), quelldatei: d.path_display, quelle_id: d.id }));
+    if (v) location.hash = `#/bearbeiten/${v.id}`;
+  };
+  $('#b-alle') && ($('#b-alle').onclick = async () => {
+    $('#b-alle').disabled = true;
+    for (let i = 0; i < docs.length; i++) if (analysierbar(docs[i].name)) await einzeln(i);
+    toast('Analyse abgeschlossen.');
+  });
+}
+
+// ---------------- Einstellungen ----------------
+function einstellungen() {
+  const e = store.state.einstellungen;
+  const verbunden = dbx.isConnected();
+  main().innerHTML = `<h1>Einstellungen</h1>
+    <section class="karte"><h2>Dropbox</h2>
+      ${verbunden ? `<p>Verbunden. Eingang: <b>${esc(CONFIG.eingang)}</b><br>Daten: <b>${esc(CONFIG.daten)}</b></p>
+        <button id="b-sync">Jetzt synchronisieren</button> <button id="b-trennen" class="gefahr">Trennen</button>`
+        : `<p>Verbinde deine Dropbox, damit die App deine Verträge lesen und speichern kann. Bis dahin siehst du Beispieldaten.</p><button id="b-dbx" class="primaer">Mit Dropbox verbinden</button>`}
+    </section>
+    <section class="karte"><h2>Entsperren</h2>
+      ${lock.passkeySupported() ? (lock.hasPasskey()
+        ? '<p>Face ID / Touch ID ist eingerichtet.</p><button id="b-pk-weg">Face ID entfernen</button>'
+        : '<p>Richte Face ID (iPhone/iPad) bzw. Touch ID oder Windows Hello (PC) ein.</p><button id="b-pk" class="primaer">Face ID einrichten</button>')
+        : '<p>Dieses Gerät unterstützt keine biometrische Anmeldung im Browser.</p>'}
+      <form id="f-pw" class="zeile"><input type="password" name="pw" placeholder="Neues Passwort" minlength="8" autocomplete="new-password"><button>Passwort ändern</button></form>
+      <button id="b-sperren">Jetzt sperren</button>
+    </section>
+    <section class="karte"><h2>Erinnerungen</h2>
+      <p>Einen Monat vor Ablauf jeder Kündigungsfrist bekommst du einen Kalendereintrag mit Alarm. Abonniere dazu den Kalender in Outlook:
+      Outlook → Kalender hinzufügen → <i>Aus dem Internet abonnieren</i> → Link einfügen. Die Alarme erscheinen dann als Push-Mitteilung auf iPhone, iPad und PC.</p>
+      ${verbunden ? '<button id="b-kal" class="primaer">Kalender-Link erzeugen</button> <button id="b-ics">.ics herunterladen</button><div id="kal-link"></div>' : '<p class="info">Erst Dropbox verbinden.</p>'}
+      <p>Zusätzlich zeigt die App selbst eine Mitteilung beim Öffnen, wenn eine Frist ansteht.</p>
+      ${'Notification' in window ? (Notification.permission === 'granted' ? '<p class="gruen">Mitteilungen erlaubt.</p>' : '<button id="b-notif">Mitteilungen erlauben</button>') : ''}
+    </section>
+    <section class="karte"><h2>Sofort-Analyse (Claude)</h2>
+      <p>Mit einem Anthropic-API-Schlüssel analysiert die App neue Dokumente auf Knopfdruck (ca. 2 bis 10 Cent pro Vertrag). Der Schlüssel wird verschlüsselt nur auf diesem Gerät gespeichert.
+      Schlüssel erstellen: <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">console.anthropic.com</a></p>
+      <form id="f-key" class="zeile"><input type="password" name="k" placeholder="${e.anthropicKey ? 'gespeichert (••••' + esc(e.anthropicKey.slice(-4)) + ')' : 'sk-ant-…'}" autocomplete="off"><button>Speichern</button>${e.anthropicKey ? '<button type="button" id="b-key-weg" class="gefahr">Entfernen</button>' : ''}</form>
+    </section>
+    <section class="karte"><h2>App installieren</h2>
+      <p><b>iPhone/iPad:</b> In Safari auf <i>Teilen</i> → <i>Zum Home-Bildschirm</i>. <b>PC:</b> In Chrome/Edge in der Adresszeile auf das Installieren-Symbol.</p>
+    </section>
+    <section class="karte"><h2>Gerät zurücksetzen</h2><p>Löscht Passwort, Face ID und Zugänge auf diesem Gerät. Die Daten in der Dropbox bleiben.</p><button id="b-reset" class="gefahr">Zurücksetzen</button></section>`;
+  const on = (id, fn) => { const el = $(id); if (el) el.onclick = fn; };
+  on('#b-dbx', () => dbx.startLogin());
+  on('#b-sync', () => versuch(async () => { await store.synchronisiere(); }, 'Synchronisiert.'));
+  on('#b-trennen', async () => { if (confirm('Dropbox-Verbindung auf diesem Gerät trennen?')) { await store.setzeEinstellung('dropbox', null); location.reload(); } });
+  on('#b-pk', () => versuch(async () => { await lock.enrollPasskey(); einstellungen(); }, 'Face ID eingerichtet.'));
+  on('#b-pk-weg', () => { lock.removePasskey(); einstellungen(); });
+  on('#b-sperren', () => { lock.lock(); zeigeSperre(); });
+  on('#b-notif', async () => { await Notification.requestPermission(); einstellungen(); pruefeErinnerungen(); });
+  on('#b-key-weg', async () => { await store.setzeEinstellung('anthropicKey', null); einstellungen(); });
+  on('#b-reset', () => { if (confirm('Wirklich zurücksetzen?')) { lock.reset(); location.reload(); } });
+  on('#b-kal', () => versuch(async () => {
+    const url = await store.kalenderLink();
+    $('#kal-link').innerHTML = `<p><input readonly value="${esc(url)}" onclick="this.select()"></p><button id="b-copy">Link kopieren</button>`;
+    $('#b-copy').onclick = () => navigator.clipboard.writeText(url).then(() => toast('Kopiert.'));
+  }));
+  on('#b-ics', () => herunterladen({ blob: new Blob([c.kalenderICS(store.state.vertraege)], { type: 'text/calendar' }), name: 'vertragsfristen.ics' }));
+  $('#f-pw').onsubmit = (ev) => { ev.preventDefault(); versuch(() => lock.changePassword(new FormData(ev.target).get('pw')), 'Passwort geändert.'); };
+  $('#f-key').onsubmit = async (ev) => {
+    ev.preventDefault();
+    const k = String(new FormData(ev.target).get('k')).trim();
+    if (!k.startsWith('sk-ant-')) return toast('Das sieht nicht wie ein Anthropic-Schlüssel aus (beginnt mit sk-ant-).', 'fehler');
+    await versuch(() => store.setzeEinstellung('anthropicKey', k), 'Schlüssel gespeichert.');
+    einstellungen();
+  };
+}
+
+// ---------------- Start ----------------
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+navigator.serviceWorker?.addEventListener('message', (e) => { if (e.data?.url) location.hash = e.data.url; });
+zeigeSperre();
