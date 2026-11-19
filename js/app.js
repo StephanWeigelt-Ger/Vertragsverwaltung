@@ -7,6 +7,7 @@ import { ABSCHNITTE, SICHERHEIT_FELDER } from './felder.js';
 import { BERICHTE, erstelle } from './berichte.js';
 import { aufbereiten, formatiere, alsPDF, alsExcel, herunterladen } from './export.js';
 import { analysiere, analysierbar } from './analyse.js';
+import { treffer as suchTreffer } from './suche.js';
 
 const $ = (s, el = document) => el.querySelector(s);
 const main = () => $('#main');
@@ -147,6 +148,7 @@ function uebersicht() {
   for (const v of vs) proKat[v.kategorie] = (proKat[v.kategorie] || 0) + 1;
   main().innerHTML = `
     <h1>Übersicht</h1>
+    <form id="f-suche" class="suchleiste"><input type="search" name="q" placeholder="Vertrag suchen: Nummer, Kennzeichen, Objekt, Zähler, Betrag …" autocomplete="off"><button class="primaer">Suchen</button></form>
     <div class="kpis">
       <div class="kpi"><span>Aktive Verträge</span><b>${vs.length}</b></div>
       <div class="kpi"><span>Beiträge pro Jahr</span><b>${c.fmtEuro(jahres)}</b><small>Ø ${c.fmtEuro(jahres / 12)} im Monat</small></div>
@@ -167,13 +169,16 @@ function uebersicht() {
         <ul class="liste">${Object.entries(proKat).sort().map(([k, n]) => `<li><a href="#/vertraege/${encodeURIComponent(k)}"><span>${esc(k)}</span><b>${n}</b></a></li>`).join('') || '<p class="leer">Noch keine Verträge.</p>'}</ul>
       </section>
     </div>`;
+  $('#f-suche').onsubmit = (e) => {
+    e.preventDefault();
+    Object.assign(filter, { q: String(new FormData(e.target).get('q') || ''), kat: '', fokus: true });
+    location.hash = '#/vertraege/';
+  };
 }
 
 // ---------------- Vertragsliste ----------------
 let filter = { q: '', kat: '', gruppe: '', sort: 'titel' };
-function suchtext(v) {
-  return JSON.stringify(v).toLowerCase();
-}
+const suchCache = new WeakMap();
 function liste(kat) {
   if (kat !== undefined) filter.kat = kat;
   const alle = store.state.vertraege;
@@ -181,7 +186,11 @@ function liste(kat) {
   main().innerHTML = `
     <div class="kopf"><h1>Verträge</h1><a class="knopf primaer" href="#/neu">+ Neu</a></div>
     <div class="filter">
-      <input type="search" id="q" placeholder="Suchen: Nummer, Anbieter, Objekt, Kennzeichen, Zähler …" value="${esc(filter.q)}">
+      <input type="search" id="q" placeholder="Suchen in allen Feldern: Nummer, Kennzeichen, Objekt, Zähler, Betrag, Datum …" value="${esc(filter.q)}" autocomplete="off">
+      <details class="tipp"><summary>Suchtipps</summary>
+        <p>Gesucht wird in <b>allen Feldern</b> inkl. Sicherheiten, Analyse und Dokumentname. Mehrere Wörter müssen alle vorkommen.
+        Beträge und Daten so eingeben, wie du sie kennst (<i>1.184,40</i>, <i>01.01.2027</i>, <i>Januar 2027</i>). Kennzeichen und Nummern gehen auch ohne Leerzeichen (<i>levsw123</i>).
+        Gezielt in einem Feld: <i>kennzeichen:LEV</i>, <i>zähler:1ESY</i>, <i>art:kfz</i>, <i>anbieter:"Muster Versicherung"</i>.</p></details>
       <div class="chips">${['', ...kats].map((k) => `<button class="chip ${filter.kat === k ? 'an' : ''}" data-kat="${esc(k)}">${esc(k || 'Alle')}</button>`).join('')}</div>
       <div class="zeile">
         <label>Gruppieren<select id="gruppe">${[['', 'keine'], ['kategorie', 'Kategorie'], ['art', 'Art'], ['objekt', 'Objekt'], ['anbieter', 'Anbieter']].map(([k, l]) => `<option value="${k}" ${filter.gruppe === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
@@ -191,8 +200,15 @@ function liste(kat) {
     </div>
     <div id="treffer"></div>`;
   const zeichnen = () => {
-    const q = filter.q.toLowerCase().split(/\s+/).filter(Boolean);
-    let vs = alle.filter((v) => (!filter.kat || v.kategorie === filter.kat) && (filter.beendet || v.status !== 'beendet') && q.every((w) => suchtext(v).includes(w)));
+    const fund = new Map();
+    let vs = alle.filter((v) => {
+      if (filter.kat && v.kategorie !== filter.kat) return false;
+      if (!filter.beendet && v.status === 'beendet' && !filter.q) return false;
+      if (!filter.q.trim()) return true;
+      const t = suchTreffer(v, filter.q, suchCache);
+      if (t) fund.set(v, t);
+      return !!t;
+    });
     const sorter = {
       titel: (a, b) => titelVon(a).localeCompare(titelVon(b), 'de'),
       frist: (a, b) => (c.kuendigungSpaetestens(a) || 9e15) - (c.kuendigungSpaetestens(b) || 9e15),
@@ -210,23 +226,25 @@ function liste(kat) {
     $('#treffer').innerHTML = `<p class="info">${vs.length} Verträge · Jahresbeiträge ${c.fmtEuro(summe)}</p>` +
       [...gruppen.entries()].sort((a, b) => a[0].localeCompare(b[0], 'de')).map(([g, items]) => `
         ${g ? `<h3 class="gruppe">${esc(g)} <small>${items.length} · ${c.fmtEuro(items.reduce((a, v) => a + (c.jahresbeitrag(v) || 0), 0))} p. a.</small></h3>` : ''}
-        <div class="karten">${items.map(vertragKarte).join('')}</div>`).join('') || '<p class="leer">Keine Treffer.</p>';
+        <div class="karten">${items.map((v) => vertragKarte(v, fund.get(v))).join('')}</div>`).join('') || '<p class="leer">Keine Treffer.</p>';
   };
   zeichnen();
   $('#q').oninput = (e) => { filter.q = e.target.value; zeichnen(); };
+  if (filter.fokus) { filter.fokus = false; const q = $('#q'); q.focus(); q.setSelectionRange(q.value.length, q.value.length); }
   $('#gruppe').onchange = (e) => { filter.gruppe = e.target.value; zeichnen(); };
   $('#sort').onchange = (e) => { filter.sort = e.target.value; zeichnen(); };
   $('#beendet').onchange = (e) => { filter.beendet = e.target.checked; zeichnen(); };
   for (const b of document.querySelectorAll('.chip')) b.onclick = () => { filter.kat = b.dataset.kat; liste(); };
 }
 
-function vertragKarte(v) {
+function vertragKarte(v, fund) {
   const jb = c.jahresbeitrag(v);
   const d = v.darlehen;
   return `<a class="vkarte ${v.status === 'beendet' ? 'aus' : ''}" href="#/vertrag/${v.id}">
     <div class="vk-kopf"><span class="kat">${esc(v.kategorie || '')}</span>${v.pruefen ? '<span class="badge blau">prüfen</span>' : ''}${v.status === 'gekündigt' ? '<span class="badge grau">gekündigt</span>' : ''}</div>
     <b>${esc(titelVon(v))}</b>
     <small>${esc([v.vertragsnummer && 'Nr. ' + v.vertragsnummer, v.kennzeichen, v.objekt].filter(Boolean).join(' · '))}</small>
+    ${fund?.length ? `<div class="fund">${fund.slice(0, 3).map((f) => `<span><i>${esc(f.feld)}:</i> ${esc(f.wert.length > 70 ? f.wert.slice(0, 70) + '…' : f.wert)}</span>`).join('')}</div>` : ''}
     <div class="vk-fuss">
       ${d ? `<span>Restschuld ${c.fmtEuro(c.restschuld(v))}</span>` : jb ? `<span>${c.fmtEuro(c.num(v.beitrag))} ${esc(v.beitrag_rhythmus || '')}</span>` : '<span></span>'}
       ${fristBadge(v)}
