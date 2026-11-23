@@ -40,7 +40,7 @@ export function eintraege(v) {
       : typ === 'euro' ? c.fmtEuro(c.num(wert)) : typ === 'datum' ? c.fmtDatum(wert) : typ === 'prozent' ? c.fmtProzent(wert) : String(wert);
     e.push({ feld, wert: anzeige, text: vs.join(' | ') });
   };
-  const bekannt = new Set(['id', '_datei', 'demo', 'darlehen', 'analyse', 'zusatzfelder', 'pruefen']);
+  const bekannt = new Set(['id', '_datei', '_nachtraege', 'demo', 'darlehen', 'analyse', 'zusatzfelder', 'pruefen', 'nachtrag', 'dokumenttyp', 'zu_vertrag', 'zuordnung_geloest']);
   for (const s of ABSCHNITTE) {
     const quelle = s.pfad ? v[s.pfad] || {} : v;
     for (const f of s.felder) {
@@ -61,6 +61,14 @@ export function eintraege(v) {
   add('Kündigen bis', c.isoDate(c.kuendigungSpaetestens(v)), 'datum');
   add('Ablauf', c.isoDate(c.naechsterKuendigungstermin(v)), 'datum');
   add('Dokument', v.quelldatei);
+  for (const n of [...(v._nachtraege || []), ...(v.dokumenttyp === 'Nachtrag' ? [v] : [])]) {
+    const nt = n.nachtrag || {};
+    add('Nachtrag', [nt.titel, nt.inhalt].filter(Boolean).join(': '));
+    add('Nachtrag vom', nt.datum, 'datum');
+    add('Nachtrag gültig ab', nt.gueltig_ab, 'datum');
+    for (const a of nt.aenderungen || []) add(`Nachtrag: ${a.bezeichnung || a.feld}`, `${a.alt ?? ''} → ${a.neu ?? ''}`);
+    if (n !== v) add('Nachtrag-Dokument', n.quelldatei);
+  }
   // alle übrigen Felder, die nicht in den Formularen vorkommen (z. B. aus der Analyse)
   for (const [k, w] of Object.entries(v)) if (!bekannt.has(k) && !['quelldatei', 'quelle_id', 'erstellt', 'aktualisiert', 'analysiert_am'].includes(k)) add(k, w);
   for (const [k, w] of Object.entries(v.darlehen || {})) if (k !== 'sicherheiten' && !ABSCHNITTE.find((s) => s.pfad === 'darlehen').felder.some((f) => f.k === k)) add(k, w);

@@ -8,6 +8,7 @@ import { BERICHTE, erstelle } from './berichte.js';
 import { aufbereiten, formatiere, alsPDF, alsExcel, herunterladen } from './export.js';
 import { analysiere, analysierbar } from './analyse.js';
 import { treffer as suchTreffer } from './suche.js';
+import { istNachtrag, findeVertrag, kurzueberblick, nachtragDatum, aendWert } from './nachtraege.js';
 
 const $ = (s, el = document) => el.querySelector(s);
 const main = () => $('#main');
@@ -26,7 +27,20 @@ async function versuch(fn, ok) {
   try { const r = await fn(); if (ok) toast(ok); return r; } catch (e) { console.error(e); toast(e.message || String(e), 'fehler'); return undefined; }
 }
 function titelVon(v) {
+  if (istNachtrag(v)) return ['Nachtrag', v.nachtrag?.titel || v.art, v.anbieter].filter(Boolean).join(' · ');
   return [v.art || v.kategorie, v.anbieter].filter(Boolean).join(' · ') || 'Vertrag';
+}
+
+function nachtragsBlock(n, mitDoc = true) {
+  const nt = n.nachtrag || {};
+  const aend = (nt.aenderungen || []).filter((a) => a && (a.neu !== undefined || a.alt !== undefined));
+  return `<article class="nachtrag">
+    <div class="nt-kopf"><b>${esc(nt.titel || 'Nachtrag')}</b><span class="info">${nt.datum ? `vom ${c.fmtDatum(nt.datum)}` : ''}${nt.gueltig_ab ? ` · gültig ab ${c.fmtDatum(nt.gueltig_ab)}` : ''}</span></div>
+    ${nt.inhalt ? `<p>${esc(nt.inhalt)}</p>` : n.analyse?.zusammenfassung ? `<p>${esc(n.analyse.zusammenfassung)}</p>` : ''}
+    ${aend.length ? `<ul class="aenderungen">${aend.map((a) => `<li><span>${esc(a.bezeichnung || a.feld)}</span> ${a.alt !== null && a.alt !== undefined && a.alt !== '' ? `<s>${esc(aendWert(a.alt, a.feld))}</s> → ` : ''}<b>${esc(aendWert(a.neu, a.feld))}</b></li>`).join('')}</ul>` : ''}
+    ${n.analyse?.kritisch?.length ? `<p class="rot klein">Kritisch: ${esc(n.analyse.kritisch.join(' · '))}</p>` : ''}
+    <div class="aktionen">${mitDoc && n.quelldatei ? `<button data-doc="${esc(n.quelle_id || n.quelldatei)}">Dokument öffnen</button>` : ''}${mitDoc ? `<button class="link" data-loesen="${esc(n.id)}">Zuordnung lösen</button>` : ''}</div>
+  </article>`;
 }
 function fristBadge(v) {
   const sp = c.kuendigungSpaetestens(v);
@@ -138,12 +152,13 @@ window.addEventListener('hashchange', route);
 
 // ---------------- Übersicht ----------------
 function uebersicht() {
-  const vs = store.state.vertraege.filter((v) => v.status !== 'beendet');
+  const vs = store.state.vertraege.filter((v) => v.status !== 'beendet' && !istNachtrag(v));
+  const offeneNachtraege = store.state.vertraege.filter(istNachtrag);
   const jahres = vs.reduce((a, v) => a + (c.jahresbeitrag(v) || 0), 0);
   const restschuld = vs.filter((v) => v.kategorie === 'Darlehen').reduce((a, v) => a + c.restschuld(v), 0);
   const fristen = vs.map((v) => ({ v, sp: c.kuendigungSpaetestens(v) })).filter((x) => x.sp && x.v.status !== 'gekündigt' && c.tageBis(x.sp) >= 0 && c.tageBis(x.sp) <= 120)
     .sort((a, b) => a.sp - b.sp);
-  const pruefen = vs.filter((v) => v.pruefen);
+  const pruefen = [...vs.filter((v) => v.pruefen || v._nachtraege?.some((n) => n.pruefen)), ...offeneNachtraege];
   const proKat = {};
   for (const v of vs) proKat[v.kategorie] = (proKat[v.kategorie] || 0) + 1;
   main().innerHTML = `
@@ -155,7 +170,7 @@ function uebersicht() {
       <div class="kpi"><span>Restschuld Darlehen</span><b>${c.fmtEuro(restschuld)}</b></div>
       <div class="kpi ${fristen.some((f) => c.tageBis(f.sp) <= 31) ? 'warn' : ''}"><span>Fristen in 120 Tagen</span><b>${fristen.length}</b></div>
     </div>
-    ${pruefen.length ? `<div class="karte hinweis"><b>${pruefen.length} neu analysierte Verträge bitte prüfen:</b>
+    ${pruefen.length ? `<div class="karte hinweis"><b>${pruefen.length} neu erfasste Verträge/Nachträge bitte prüfen${offeneNachtraege.length ? ` (${offeneNachtraege.length} Nachtrag ohne Zuordnung)` : ''}:</b>
       <ul>${pruefen.map((v) => `<li><a href="#/vertrag/${v.id}">${esc(titelVon(v))}</a></li>`).join('')}</ul></div>` : ''}
     <div class="raster2">
       <section class="karte">
@@ -241,7 +256,7 @@ function vertragKarte(v, fund) {
   const jb = c.jahresbeitrag(v);
   const d = v.darlehen;
   return `<a class="vkarte ${v.status === 'beendet' ? 'aus' : ''}" href="#/vertrag/${v.id}">
-    <div class="vk-kopf"><span class="kat">${esc(v.kategorie || '')}</span>${v.pruefen ? '<span class="badge blau">prüfen</span>' : ''}${v.status === 'gekündigt' ? '<span class="badge grau">gekündigt</span>' : ''}</div>
+    <div class="vk-kopf"><span class="kat">${esc(istNachtrag(v) ? 'Nachtrag' : v.kategorie || '')}</span>${istNachtrag(v) ? '<span class="badge gelb">zuordnen</span>' : ''}${v._nachtraege?.length ? `<span class="badge grau">${v._nachtraege.length} Nachtr.</span>` : ''}${v.pruefen || v._nachtraege?.some((n) => n.pruefen) ? '<span class="badge blau">prüfen</span>' : ''}${v.status === 'gekündigt' ? '<span class="badge grau">gekündigt</span>' : ''}</div>
     <b>${esc(titelVon(v))}</b>
     <small>${esc([v.vertragsnummer && 'Nr. ' + v.vertragsnummer, v.kennzeichen, v.objekt].filter(Boolean).join(' · '))}</small>
     ${fund?.length ? `<div class="fund">${fund.slice(0, 3).map((f) => `<span><i>${esc(f.feld)}:</i> ${esc(f.wert.length > 70 ? f.wert.slice(0, 70) + '…' : f.wert)}</span>`).join('')}</div>` : ''}
@@ -303,6 +318,13 @@ function detail(id) {
     <h1>${esc(titelVon(v))}</h1>
     <p class="untertitel">${esc([v.kategorie, v.vertragsnummer && 'Nr. ' + v.vertragsnummer, v.objekt || v.kennzeichen].filter(Boolean).join(' · '))} ${fristBadge(v)}</p>
     ${v.pruefen ? `<div class="karte hinweis">Automatisch erfasst. Bitte Angaben prüfen. <button id="b-geprueft" class="primaer">Geprüft</button></div>` : ''}
+    ${(v._nachtraege || []).some((n) => n.pruefen) ? `<div class="karte hinweis">Neuer Nachtrag automatisch zugeordnet. Bitte prüfen. <button id="b-nt-geprueft" class="primaer">Geprüft</button></div>` : ''}
+    ${istNachtrag(v) ? `<div class="karte hinweis"><b>Dieser Nachtrag ist noch keinem Vertrag zugeordnet.</b>
+      <form id="f-zuordnen" class="zeile"><select name="ziel" required><option value="">Vertrag wählen …</option>${store.state.vertraege.filter((x) => !istNachtrag(x)).sort((a, b) => titelVon(a).localeCompare(titelVon(b), 'de'))
+        .map((x) => `<option value="${esc(x.id)}">${esc(titelVon(x))}${x.vertragsnummer ? ` (${esc(x.vertragsnummer)})` : ''}${x.objekt || x.kennzeichen ? ` · ${esc(x.kennzeichen || x.objekt)}` : ''}</option>`).join('')}</select><button class="primaer">Zuordnen</button></form></div>
+      <section class="karte"><h2>Nachtrag</h2>${nachtragsBlock(v, false)}</section>` : ''}
+    <section class="karte ueberblick"><h2>Kurzüberblick</h2><p>${esc(kurzueberblick(v))}</p></section>
+    ${v._nachtraege?.length ? `<section class="karte"><h2>Nachträge (${v._nachtraege.length})</h2>${[...v._nachtraege].reverse().map((n) => nachtragsBlock(n)).join('')}</section>` : ''}
     ${sp ? `<div class="karte frist"><div><span>Kündigung spätestens</span><b>${c.fmtDatum(sp)}</b></div><div><span>Vertragsablauf</span><b>${c.fmtDatum(termin)}</b></div><div><span>Erinnerung</span><b>${c.fmtDatum(c.erinnerungsdatum(v))}</b></div></div>` : ''}
     ${a.zusammenfassung || a.kritisch?.length || a.verbesserungen?.length ? `
       <section class="karte analyse">
@@ -323,8 +345,25 @@ function detail(id) {
   $('#b-geprueft') && ($('#b-geprueft').onclick = () => setz({ pruefen: false }, 'Gespeichert.'));
   $('#b-gek') && ($('#b-gek').onclick = () => setz({ status: 'gekündigt', gekuendigt_am: heute() }, 'Als gekündigt markiert.'));
   $('#b-doc') && ($('#b-doc').onclick = () => versuch(async () => window.open(await dbx.temporaryLink(v.quelle_id || v.quelldatei), '_blank')));
+  const roh = (nid) => store.state.roh.find((x) => x.id === nid);
+  for (const b of document.querySelectorAll('[data-doc]')) b.onclick = () => versuch(async () => window.open(await dbx.temporaryLink(b.dataset.doc), '_blank'));
+  for (const b of document.querySelectorAll('[data-loesen]')) b.onclick = async () => {
+    if (!confirm('Nachtrag von diesem Vertrag lösen? Er erscheint dann als eigener Eintrag zum Zuordnen.')) return;
+    await versuch(() => store.speichere({ ...roh(b.dataset.loesen), zu_vertrag: null, zuordnung_geloest: true }), 'Zuordnung gelöst.');
+    detail(id);
+  };
+  $('#b-nt-geprueft') && ($('#b-nt-geprueft').onclick = async () => {
+    for (const n of v._nachtraege.filter((x) => x.pruefen)) await versuch(() => store.speichere({ ...roh(n.id), pruefen: false }));
+    detail(id);
+  });
+  $('#f-zuordnen') && ($('#f-zuordnen').onsubmit = async (e) => {
+    e.preventDefault();
+    const ziel = new FormData(e.target).get('ziel');
+    const ok = await versuch(() => store.speichere({ ...roh(v.id), zu_vertrag: ziel, zuordnung_geloest: false }), 'Nachtrag zugeordnet.');
+    if (ok) location.hash = `#/vertrag/${ziel}`;
+  });
   $('#b-del').onclick = async () => {
-    if (!confirm('Diesen Vertrag aus der Liste löschen? (Das Originaldokument bleibt in der Dropbox.)')) return;
+    if (!confirm(`${istNachtrag(v) ? 'Diesen Nachtrag' : 'Diesen Vertrag'} aus der Liste löschen? (Das Originaldokument bleibt in der Dropbox.)`)) return;
     await versuch(() => store.loesche(v), 'Gelöscht.');
     location.hash = '#/vertraege';
   };
@@ -401,13 +440,13 @@ function bearbeiten(id) {
 // ---------------- Auswertungen ----------------
 function auswertungen() {
   const gruppen = [
-    ['Verträge', ['alle', 'versicherungen', 'versicherungen_objekt', 'kfz', 'gebaeude', 'energie', 'beitraege', 'fristen']],
+    ['Verträge', ['alle', 'versicherungen', 'versicherungen_objekt', 'kfz', 'gebaeude', 'energie', 'beitraege', 'fristen', 'nachtraege']],
     ['Finanzierung (Jahresabschluss)', ['verbindlichkeiten', 'sicherheiten', 'restlaufzeiten']],
   ];
   main().innerHTML = `<h1>Auswertungen</h1>
     ${gruppen.map(([t, keys]) => `<h3 class="gruppe">${t}</h3><div class="karten">${keys.map((k) => {
       const b = erstelle(k, store.state.vertraege);
-      return `<a class="vkarte" href="#/auswertung/${k}"><b>${esc(BERICHTE[k].titel)}</b><small>${b.zeilen.length} Einträge</small><div class="vk-fuss"><span>PDF · Excel</span></div></a>`;
+      return `<a class="vkarte" href="#/auswertung/${k}"><b>${esc(BERICHTE[k].titel)}</b><small>${b.zeilen.length} ${b.zeilen.length === 1 ? 'Eintrag' : 'Einträge'}</small><div class="vk-fuss"><span>PDF · Excel</span></div></a>`;
     }).join('')}</div>`).join('')}`;
 }
 
@@ -479,9 +518,12 @@ async function eingang() {
       const ergebnisse = await analysiere(blob, d.name, key, CONFIG.modell);
       const gespeichert = [];
       for (const [n, e] of ergebnisse.entries()) {
-        gespeichert.push(await store.speichere({ ...e, id: store.idAusDokument(d.id, n), erstellt: new Date().toISOString(), status: 'aktiv', pruefen: true, quelldatei: d.path_display, quelle_id: d.id, analysiert_am: new Date().toISOString(), analysiert_von: 'App' }));
+        const neu = { ...e, id: store.idAusDokument(d.id, n), erstellt: new Date().toISOString(), status: 'aktiv', pruefen: true, quelldatei: d.path_display, quelle_id: d.id, analysiert_am: new Date().toISOString(), analysiert_von: 'App' };
+        if (istNachtrag(neu)) neu.zu_vertrag = findeVertrag(neu, store.state.vertraege)?.id || null;
+        const g = await store.speichere(neu);
+        gespeichert.push(istNachtrag(neu) && neu.zu_vertrag ? store.state.vertraege.find((x) => x.id === neu.zu_vertrag) : g);
       }
-      li.querySelector('.aktionen').innerHTML = gespeichert.map((v) => `<a class="knopf" href="#/vertrag/${v.id}">${esc(titelVon(v))}</a>`).join('');
+      li.querySelector('.aktionen').innerHTML = gespeichert.filter(Boolean).map((v) => `<a class="knopf" href="#/vertrag/${v.id}">${ergebnisse.some(istNachtrag) && !istNachtrag(v) ? 'Nachtrag zu ' : ''}${esc(titelVon(v))}</a>`).join('');
       li.classList.replace('laeuft', 'fertig');
     } catch (e) {
       li.classList.remove('laeuft');
