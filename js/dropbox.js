@@ -75,16 +75,20 @@ async function rpc(endpoint, body) {
     headers: { Authorization: 'Bearer ' + (await token()), 'Content-Type': 'application/json', ...rootHeader() },
     body: JSON.stringify(body),
   });
-  if (!r.ok) {
-    const txt = await r.text();
-    const scope = (txt.match(/required scope '([^']+)'/) || txt.match(/"required_scope":"([^"]+)"/))?.[1];
-    const err = new Error(scope
-      ? `Der Dropbox-App fehlt die Berechtigung „${scope}". Bitte in der Dropbox App Console unter Permissions aktivieren, dann in den Einstellungen Dropbox trennen und neu verbinden.`
-      : `Dropbox ${endpoint}: ${txt}`);
-    err.status = r.status; err.body = txt;
-    throw err;
-  }
+  if (!r.ok) throw await fehlerAus(r, endpoint);
   return r.json();
+}
+
+// Verständliche Fehlermeldung aus einer Dropbox-Antwort (fehlende Berechtigung, abgelaufener Zugang …).
+async function fehlerAus(r, was) {
+  const txt = await r.text().catch(() => '');
+  const scope = (txt.match(/required scope '([^']+)'/) || txt.match(/"required_scope":\s*"([^"]+)"/))?.[1];
+  const err = new Error(scope
+    ? `Der Dropbox-App fehlt die Berechtigung „${scope}“. Bitte in der Dropbox App Console unter Permissions aktivieren, „Submit“ drücken und danach in den Einstellungen Dropbox trennen und neu verbinden.`
+    : r.status === 401 ? 'Der Dropbox-Zugang ist ungültig oder abgelaufen. Bitte in den Einstellungen Dropbox trennen und neu verbinden.'
+      : `Dropbox ${was} (${r.status}): ${txt.slice(0, 300)}`);
+  err.status = r.status; err.body = txt;
+  return err;
 }
 
 async function existiert(path) {
@@ -137,7 +141,7 @@ export async function download(path) {
     method: 'POST',
     headers: { Authorization: 'Bearer ' + (await token()), 'Dropbox-API-Arg': headerArg({ path }), ...rootHeader() },
   });
-  if (!r.ok) throw new Error('Download fehlgeschlagen: ' + path);
+  if (!r.ok) throw await fehlerAus(r, 'Download');
   return r.blob();
 }
 

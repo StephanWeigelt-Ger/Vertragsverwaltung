@@ -1,5 +1,5 @@
 // Service Worker: App offline verfügbar machen. Daten (Dropbox, API) werden nie gecacht.
-const VERSION = 'vv-6';
+const VERSION = 'vv-7';
 const DATEIEN = ['./', 'index.html', 'app.css', 'manifest.webmanifest', 'icons/icon-192.png',
   'js/app.js', 'js/calc.js', 'js/lock.js', 'js/store.js', 'js/dropbox.js', 'js/config.js', 'js/felder.js',
   'js/berichte.js', 'js/export.js', 'js/analyse.js', 'js/demo.js', 'js/suche.js', 'js/nachtraege.js', 'js/hinweise.js',
@@ -17,7 +17,7 @@ self.addEventListener('fetch', (e) => {
   const eigen = url.origin === location.origin;
   if (!eigen) return;
   // Netzwerk zuerst (immer aktuell), bei Offline aus dem Cache
-  e.respondWith(fetch(e.request).then((r) => {
+  e.respondWith(fetch(e.request, { cache: 'no-cache' }).then((r) => {
     if (r.ok) { const k = r.clone(); caches.open(VERSION).then((c) => c.put(e.request, k)); }
     return r;
   }).catch(() => caches.match(e.request, { ignoreSearch: eigen })));
