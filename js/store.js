@@ -11,6 +11,8 @@ let vertraege = []; // gespeicherte Dateien (Verträge und Nachträge)
 let ansicht = null; // Verträge mit angehängten Nachträgen
 let einstellungen = {};
 let demo = false;
+let syncFehler = '';
+let letzteSync = null;
 
 const geaendert = () => { ansicht = null; };
 export const state = {
@@ -18,6 +20,8 @@ export const state = {
   get roh() { return vertraege; },
   get demo() { return demo; },
   get einstellungen() { return einstellungen; },
+  get syncFehler() { return syncFehler; },
+  get letzteSync() { return letzteSync; },
 };
 
 export async function ladeEinstellungen() {
@@ -52,16 +56,33 @@ export async function ladeCache() {
 export async function synchronisiere() {
   if (!dbx.isConnected()) { demo = true; if (!vertraege.length) vertraege = structuredClone(DEMO); geaendert(); return vertraege; }
   if (demo) { vertraege = []; demo = false; }
+  syncFehler = '';
+  let fehler;
+  try { fehler = await dbx.pruefeOrdner(CONFIG.eingang); } catch (e) { syncFehler = e.message || String(e); throw e; }
+  if (fehler) { syncFehler = fehler; throw new Error(fehler); }
   const dateien = (await dbx.listFolder(VERZ())).filter((e) => e['.tag'] === 'file' && e.name.endsWith('.json'));
   const neu = [];
-  await Promise.all(dateien.map(async (f) => {
-    try {
-      const v = JSON.parse(await (await dbx.download(f.path_lower)).text());
-      v._datei = f.path_display;
-      neu.push(v);
-    } catch (e) { console.warn('Datei unlesbar', f.path_display, e); }
-  }));
+  let unlesbar = 0;
+  // Höchstens 4 Downloads gleichzeitig, sonst bremst Dropbox (Fehler 429).
+  const warteschlange = [...dateien];
+  const arbeiter = async () => {
+    for (let f; (f = warteschlange.shift());) {
+      for (let versuch = 0; versuch < 3; versuch++) {
+        try {
+          const v = JSON.parse(await (await dbx.download(f.path_lower)).text());
+          v._datei = f.path_display;
+          neu.push(v);
+          break;
+        } catch (e) {
+          if (versuch === 2) { unlesbar++; console.warn('Datei unlesbar', f.path_display, e); } else await new Promise((r) => setTimeout(r, 800 * (versuch + 1)));
+        }
+      }
+    }
+  };
+  await Promise.all([1, 2, 3, 4].map(arbeiter));
+  if (unlesbar) console.warn(unlesbar + ' Dateien nicht lesbar');
   vertraege = neu;
+  letzteSync = new Date();
   geaendert();
   await cacheSchreiben();
   return vertraege;

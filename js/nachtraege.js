@@ -7,6 +7,9 @@
 import * as c from './calc.js';
 
 export const istNachtrag = (v) => v?.dokumenttyp === 'Nachtrag';
+// Unterlagen (Antrag, Zulassung, Kaufvertrag …) sind kein eigener Vertrag, gehören aber zu einem.
+export const istUnterlage = (v) => v?.dokumenttyp === 'Unterlage' || /^unterlage/i.test(String(v?.zusatzfelder?.dokumentart || ''));
+const unterlageZu = (u) => u.zu_vertrag || u.zusatzfelder?.gehoert_zu || null;
 
 const kompakt = (s) => String(s ?? '').toLowerCase()
   .replace(/ä/g, 'ae').replace(/ö/g, 'oe').replace(/ü/g, 'ue').replace(/ß/g, 'ss').replace(/[^a-z0-9]/g, '');
@@ -47,11 +50,15 @@ function setzeFeld(v, feld, wert) {
 // Baut aus den gespeicherten Dateien die Ansicht: Verträge mit angehängten Nachträgen.
 // Nicht zuordenbare Nachträge bleiben als eigener Eintrag sichtbar.
 export function zusammenfuehren(roh) {
-  const vertraege = roh.filter((v) => !istNachtrag(v)).map((v) => ({ ...v, _nachtraege: [] }));
+  const vertraege = roh.filter((v) => !istNachtrag(v) && !istUnterlage(v)).map((v) => ({ ...v, _nachtraege: [], _unterlagen: [] }));
   const offen = [];
+  for (const u of roh.filter((x) => istUnterlage(x) && !istNachtrag(x))) {
+    const v = vertraege.find((x) => x.id === unterlageZu(u));
+    if (v) v._unterlagen.push(u); else offen.push({ ...u, _nachtraege: [], _unterlagen: [] });
+  }
   for (const n of roh.filter(istNachtrag)) {
     const v = findeVertrag(n, vertraege);
-    if (v) v._nachtraege.push(n); else offen.push({ ...n, _nachtraege: [] });
+    if (v) v._nachtraege.push(n); else offen.push({ ...n, _nachtraege: [], _unterlagen: [] });
   }
   for (const v of vertraege) {
     v._nachtraege.sort((a, b) => String(nachtragDatum(a)).localeCompare(String(nachtragDatum(b))));
@@ -121,5 +128,5 @@ export function kurzueberblick(v, heute = new Date()) {
     const letzter = v._nachtraege[n - 1];
     s.push(`${n === 1 ? 'Ein Nachtrag' : `${n} Nachträge`}, zuletzt vom ${c.fmtDatum(letzter.nachtrag?.datum || nachtragDatum(letzter)) || 'unbekannten Datum'}${letzter.nachtrag?.titel ? `: ${letzter.nachtrag.titel}` : ''}.`);
   }
-  return s.join(' ');
+  return s.join(' ').replace(/\.\./g, '.');
 }

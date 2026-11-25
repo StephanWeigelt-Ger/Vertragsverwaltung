@@ -64,10 +64,15 @@ async function token() {
 // Dropbox verlangt im Header reines ASCII.
 const headerArg = (o) => JSON.stringify(o).replace(/[\u007f-￿]/g, (c) => '\\u' + c.charCodeAt(0).toString(16).padStart(4, '0'));
 
+// Bei Team-/Business-Konten liegen Ordner oft im Team-Bereich (Root-Namespace) statt im persönlichen Bereich.
+function rootHeader() {
+  return session?.pathRoot ? { 'Dropbox-API-Path-Root': JSON.stringify({ '.tag': 'root', root: session.pathRoot }) } : {};
+}
+
 async function rpc(endpoint, body) {
   const r = await fetch(API + endpoint, {
     method: 'POST',
-    headers: { Authorization: 'Bearer ' + (await token()), 'Content-Type': 'application/json' },
+    headers: { Authorization: 'Bearer ' + (await token()), 'Content-Type': 'application/json', ...rootHeader() },
     body: JSON.stringify(body),
   });
   if (!r.ok) {
@@ -80,6 +85,34 @@ async function rpc(endpoint, body) {
     throw err;
   }
   return r.json();
+}
+
+async function existiert(path) {
+  try { await rpc('files/get_metadata', { path }); return true; } catch (e) {
+    if (String(e.body || '').includes('not_found')) return false;
+    throw e;
+  }
+}
+
+// Prüft, ob der Ordner sichtbar ist. Wenn nicht, wird bei Team-Konten der Team-Bereich versucht.
+// Liefert null, wenn alles passt, sonst eine verständliche Fehlermeldung.
+export async function pruefeOrdner(path) {
+  if (await existiert(path)) return null;
+  let konto = null;
+  try { konto = await rpc('users/get_current_account', null); } catch (e) { /* Berechtigung account_info.read fehlt evtl. */ }
+  const ri = konto?.root_info;
+  if (ri && ri.root_namespace_id && ri.root_namespace_id !== ri.home_namespace_id && session?.pathRoot !== ri.root_namespace_id) {
+    const vorher = session.pathRoot;
+    session = { ...session, pathRoot: ri.root_namespace_id };
+    if (await existiert(path)) { onSessionChange(session); return null; }
+    session = { ...session, pathRoot: vorher };
+  }
+  let sichtbar = [];
+  try { sichtbar = (await rpc('files/list_folder', { path: '', limit: 50 })).entries.map((e) => e.name); } catch (e) { /* egal */ }
+  return `Die App findet den Ordner „${path}“ in deiner Dropbox nicht.`
+    + (sichtbar.length ? ` Sichtbar sind nur: ${sichtbar.slice(0, 12).join(', ')}${sichtbar.length > 12 ? ' …' : ''}.` : ' Die App sieht in deiner Dropbox gar keine Ordner.')
+    + ' Wenn dort nicht „privat“ steht, hat die Dropbox-App vermutlich nur Zugriff auf einen eigenen App-Ordner statt auf die ganze Dropbox.'
+    + (konto ? ` (Konto: ${konto.email || konto.name?.display_name || ''}, Typ: ${ri?.['.tag'] || 'unbekannt'})` : '');
 }
 
 export async function listFolder(path, recursive = false) {
@@ -102,7 +135,7 @@ export async function listFolder(path, recursive = false) {
 export async function download(path) {
   const r = await fetch(CONTENT + 'files/download', {
     method: 'POST',
-    headers: { Authorization: 'Bearer ' + (await token()), 'Dropbox-API-Arg': headerArg({ path }) },
+    headers: { Authorization: 'Bearer ' + (await token()), 'Dropbox-API-Arg': headerArg({ path }), ...rootHeader() },
   });
   if (!r.ok) throw new Error('Download fehlgeschlagen: ' + path);
   return r.blob();
@@ -114,6 +147,7 @@ export async function upload(path, data, contentType = 'application/octet-stream
     headers: {
       Authorization: 'Bearer ' + (await token()),
       'Content-Type': 'application/octet-stream',
+      ...rootHeader(),
       'Dropbox-API-Arg': headerArg({ path, mode: 'overwrite', autorename: false, mute: true }),
     },
     body: data instanceof Blob ? data : new Blob([data], { type: contentType }),

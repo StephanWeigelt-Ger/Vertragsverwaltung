@@ -1,8 +1,8 @@
 // Service Worker: App offline verfügbar machen. Daten (Dropbox, API) werden nie gecacht.
-const VERSION = 'vv-4';
+const VERSION = 'vv-5';
 const DATEIEN = ['./', 'index.html', 'app.css', 'manifest.webmanifest', 'icons/icon-192.png',
   'js/app.js', 'js/calc.js', 'js/lock.js', 'js/store.js', 'js/dropbox.js', 'js/config.js', 'js/felder.js',
-  'js/berichte.js', 'js/export.js', 'js/analyse.js', 'js/demo.js', 'js/suche.js', 'js/nachtraege.js',
+  'js/berichte.js', 'js/export.js', 'js/analyse.js', 'js/demo.js', 'js/suche.js', 'js/nachtraege.js', 'js/hinweise.js',
   'vendor/jspdf.umd.min.js', 'vendor/jspdf.plugin.autotable.min.js', 'vendor/xlsx.full.min.js'];
 
 self.addEventListener('install', (e) => {
