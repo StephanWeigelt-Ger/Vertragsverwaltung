@@ -87,7 +87,7 @@ export async function enrollPasskey() {
       extensions: { prf: { eval: { first: prfSalt } } },
       timeout: 60000,
     },
-  });
+  }).catch((e) => { throw faceIdFehler(e); });
   const s = load();
   const id = b64(cred.rawId);
   let prfOut = cred.getClientExtensionResults()?.prf?.results?.first;
@@ -100,7 +100,7 @@ export async function enrollPasskey() {
   } else {
     // Fallback ohne PRF: Datenschlüssel bleibt im geschützten Gerätespeicher,
     // Freigabe nur nach erfolgreicher biometrischer Prüfung.
-    await idbPut('dataKey', await nonExtractableCopy(dataKey));
+    await idbPut('dataKey', dataKey);
     s.passkey = { id, prfSalt: b64(prfSalt), fallback: true };
   }
   save(s);
@@ -113,6 +113,16 @@ export function removePasskey() {
   idbPut('dataKey', null);
 }
 
+// Verständliche Meldungen für Fehler von Face ID / Passkeys.
+function faceIdFehler(e) {
+  const n = e?.name || '';
+  if (n === 'NotAllowedError') return new Error('Face ID wurde abgebrochen oder nicht erlaubt. Bitte erneut tippen oder das Passwort verwenden.');
+  if (n === 'InvalidStateError') return new Error('Für diese App ist auf diesem Gerät schon ein Face-ID-Zugang gespeichert. Bitte unter Einstellungen › Entsperren zuerst „Face ID entfernen“ und neu einrichten.');
+  if (n === 'NotSupportedError') return new Error('Dieses Gerät unterstützt Face ID für diese App nicht.');
+  if (n === 'SecurityError') return new Error('Face ID ist an dieser Adresse nicht erlaubt. Bitte die App über die GitHub-Pages-Adresse öffnen.');
+  return e instanceof Error ? e : new Error(String(e));
+}
+
 async function assertion(id, prfSalt) {
   const a = await navigator.credentials.get({
     publicKey: {
@@ -122,7 +132,7 @@ async function assertion(id, prfSalt) {
       extensions: { prf: { eval: { first: prfSalt } } },
       timeout: 60000,
     },
-  });
+  }).catch((e) => { throw faceIdFehler(e); });
   return { prf: a.getClientExtensionResults()?.prf?.results?.first || null };
 }
 
@@ -134,14 +144,9 @@ export async function unlockPasskey() {
     if (!r.prf) throw new Error('Gerät lieferte keinen Schlüssel. Bitte Passwort verwenden.');
     dataKey = await unwrap(s.passkey.wrapped, await prfKey(r.prf));
   } else {
-    dataKey = await idbGet('dataKey');
+    dataKey = (await idbGet('dataKey')) || null;
     if (!dataKey) throw new Error('Schlüssel nicht gefunden. Bitte Passwort verwenden.');
   }
-}
-
-async function nonExtractableCopy(key) {
-  const raw = await crypto.subtle.exportKey('raw', key);
-  return crypto.subtle.importKey('raw', raw, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']);
 }
 
 export async function encryptJSON(obj) {

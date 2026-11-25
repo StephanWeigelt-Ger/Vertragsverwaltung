@@ -59,7 +59,7 @@ function fristBadge(v) {
 }
 
 // ---------------- Sperre ----------------
-function zeigeSperre() {
+function zeigeSperre(faceIdSofort = true) {
   document.body.classList.add('gesperrt');
   const neu = !lock.isSetUp();
   main().innerHTML = `
@@ -78,6 +78,7 @@ function zeigeSperre() {
         <label>Passwort<input type="text" class="pw" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore name="pw" required></label>
         <button class="${lock.hasPasskey() ? '' : 'primaer'}">Entsperren</button>
       </form>
+      ${!lock.hasPasskey() && lock.passkeySupported() ? '<p class="info">Face ID ist auf diesem Gerät noch nicht eingerichtet. Entsperre einmal mit dem Passwort und tippe dann unter Einstellungen › Entsperren auf „Face ID einrichten“.</p>' : ''}
       <button class="link" id="b-reset">Passwort vergessen? App auf diesem Gerät zurücksetzen</button>`}
   </section>`;
   if (neu) {
@@ -90,10 +91,20 @@ function zeigeSperre() {
   } else {
     $('#f-unlock').onsubmit = async (e) => {
       e.preventDefault();
-      await versuch(async () => { await lock.unlockPassword(new FormData(e.target).get('pw')); await nachEntsperren(); });
+      await versuch(async () => {
+        await lock.unlockPassword(new FormData(e.target).get('pw'));
+        if (!lock.hasPasskey() && lock.passkeySupported()) location.hash = '#/einstellungen';
+        await nachEntsperren();
+      });
     };
     const fb = $('#b-faceid');
-    if (fb) fb.onclick = () => versuch(async () => { await lock.unlockPasskey(); await nachEntsperren(); });
+    if (fb) {
+      fb.onclick = () => versuch(async () => { await lock.unlockPasskey(); await nachEntsperren(); });
+      // Face ID gleich beim Öffnen anbieten. Lässt der Browser das ohne Tippen nicht zu, bleibt der Knopf.
+      if (faceIdSofort) lock.unlockPasskey()
+        .then(() => { if (document.body.classList.contains('gesperrt')) return nachEntsperren(); })
+        .catch(() => {});
+    }
     $('#b-reset').onclick = () => {
       if (confirm('Alle lokal gespeicherten Zugänge auf diesem Gerät löschen? Deine Verträge in der Dropbox bleiben erhalten.')) { lock.reset(); location.reload(); }
     };
@@ -651,7 +662,7 @@ function einstellungen() {
   on('#b-trennen', async () => { if (confirm('Dropbox-Verbindung auf diesem Gerät trennen?')) { await store.setzeEinstellung('dropbox', null); location.reload(); } });
   on('#b-pk', () => versuch(async () => { await lock.enrollPasskey(); einstellungen(); }, 'Face ID eingerichtet.'));
   on('#b-pk-weg', () => { lock.removePasskey(); einstellungen(); });
-  on('#b-sperren', () => { lock.lock(); zeigeSperre(); });
+  on('#b-sperren', () => { lock.lock(); zeigeSperre(false); });
   on('#b-notif', async () => { await Notification.requestPermission(); einstellungen(); pruefeErinnerungen(); });
   on('#b-key-weg', async () => { await store.setzeEinstellung('anthropicKey', null); einstellungen(); });
   on('#b-reset', () => { if (confirm('Wirklich zurücksetzen?')) { lock.reset(); location.reload(); } });
