@@ -178,3 +178,17 @@ details.tipp p { margin: .4rem 0 0; }
 .aenderungen span { color: var(--leise); }
 .aenderungen s { color: var(--leise); }
 .klein { font-size: .85rem; }
+
+/* Hinweise (Fristen und kritische Punkte) */
+.karte.hinweise { border-left: 4px solid var(--rot); }
+.karte.hinweise h3 { font-size: 1rem; margin: .8rem 0 .3rem; }
+.karte.hinweise h3 small { font-weight: 400; color: var(--leise); }
+.karte.hinweise ul { margin: 0; padding-left: 1.1rem; }
+.karte.hinweise li { margin: .35rem 0; overflow-wrap: anywhere; }
+ul.punkte { list-style: none; padding-left: 0 !important; }
+ul.punkte li { display: flex; gap: .6rem; align-items: flex-start; justify-content: space-between; border-top: 1px solid var(--linie); padding-top: .4rem; }
+ul.punkte li:first-child { border-top: 0; }
+ul.punkte button { flex: none; }
+.karte.fehler { background: var(--rot-bg); color: var(--rot); border-color: transparent; }
+.karte.fehler p { margin: .3rem 0 0; color: inherit; }
+details.karte > summary { cursor: pointer; }

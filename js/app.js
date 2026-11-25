@@ -9,6 +9,7 @@ import { aufbereiten, formatiere, alsPDF, alsExcel, herunterladen } from './expo
 import { analysiere, analysierbar } from './analyse.js';
 import { treffer as suchTreffer } from './suche.js';
 import { istNachtrag, findeVertrag, kurzueberblick, nachtragDatum, aendWert } from './nachtraege.js';
+import * as hinweise from './hinweise.js';
 
 const $ = (s, el = document) => el.querySelector(s);
 const main = () => $('#main');
@@ -113,7 +114,18 @@ let verstecktSeit = 0;
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) verstecktSeit = Date.now();
   else if (lock.isUnlocked() && verstecktSeit && Date.now() - verstecktSeit > 5 * 60000) { lock.lock(); zeigeSperre(); }
+  else if (lock.isUnlocked() && dbx.isConnected() && verstecktSeit && Date.now() - verstecktSeit > 60000) aktualisieren(false);
 });
+
+// Daten neu aus der Dropbox laden und die aktuelle Seite neu zeichnen.
+async function aktualisieren(mitMeldung = true) {
+  if (!dbx.isConnected()) return route();
+  const knopf = $('#b-aktualisieren');
+  if (knopf) { knopf.disabled = true; knopf.textContent = 'Lädt …'; }
+  const ok = await versuch(() => store.synchronisiere());
+  route();
+  if (ok && mitMeldung) toast(`${store.state.roh.length} Dateien geladen.`);
+}
 
 // ---------------- Erinnerungen in der App ----------------
 function faelligeErinnerungen() {
@@ -161,8 +173,29 @@ function uebersicht() {
   const pruefen = [...vs.filter((v) => v.pruefen || v._nachtraege?.some((n) => n.pruefen)), ...offeneNachtraege];
   const proKat = {};
   for (const v of vs) proKat[v.kategorie] = (proKat[v.kategorie] || 0) + 1;
+  const hw = hinweise.sammle(store.state.vertraege);
+  const kritProV = new Map();
+  for (const k of hw.kritisch) {
+    const e = kritProV.get(k.v.id) || { v: k.v, punkte: [] };
+    e.punkte.push(...k.punkte.map((t) => (k.unterlage ? `${k.unterlage.art || 'Unterlage'}: ` : '') + t));
+    kritProV.set(k.v.id, e);
+  }
+  const fristGruppen = new Map();
+  for (const f of hw.fristen) { const d = c.fmtDatum(f.sp); fristGruppen.set(d, [...(fristGruppen.get(d) || []), f]); }
+  const kurzTitel = (v) => [v.art || v.kategorie, v.kennzeichen || v.objekt || v.vertragsnummer].filter(Boolean).join(' ');
+  const hinweisKarte = hw.fristen.length || kritProV.size ? `
+    <section class="karte hinweise">
+      <h2>Hinweise</h2>
+      ${[...fristGruppen.entries()].map(([d, fs]) => `
+        <h3 class="rot">Bis ${d} entscheiden <small>(Kündigung zum ${c.fmtDatum(fs[0].termin)})</small></h3>
+        <ul>${fs.map((f) => `<li><a href="#/vertrag/${f.v.id}"><b>${esc(kurzTitel(f.v))}</b></a> · ${esc(f.v.anbieter || '')}${c.jahresbeitrag(f.v) ? `, ${c.fmtEuro(c.jahresbeitrag(f.v))} im Jahr` : ''}${f.tipp ? `<br><span class="klein">${esc(f.tipp)}</span>` : ''}</li>`).join('')}</ul>`).join('')}
+      ${kritProV.size ? `<h3 class="rot">Kritisch</h3>
+        <ul>${[...kritProV.values()].map(({ v, punkte }) => `<li><a href="#/vertrag/${v.id}"><b>${esc(kurzTitel(v))}</b></a>${v.anbieter ? ` · ${esc(v.anbieter)}` : ''}${v.status === 'beendet' ? ' (beendet)' : ''}: ${esc(punkte[0])}${punkte.length > 1 ? ` <span class="klein">+${punkte.length - 1} weitere</span>` : ''}</li>`).join('')}</ul>` : ''}
+    </section>` : '';
+  const fehlerKarte = store.state.syncFehler ? `<div class="karte fehler"><b>Verträge konnten nicht geladen werden.</b><p>${esc(store.state.syncFehler)}</p></div>` : '';
   main().innerHTML = `
-    <h1>Übersicht</h1>
+    <div class="kopf"><h1>Übersicht</h1>${dbx.isConnected() ? `<div class="aktionen"><button id="b-aktualisieren">Aktualisieren</button></div>` : ''}</div>
+    ${fehlerKarte}
     <form id="f-suche" class="suchleiste"><input type="search" name="q" placeholder="Vertrag suchen: Nummer, Kennzeichen, Objekt, Zähler, Betrag …" autocomplete="off"><button class="primaer">Suchen</button></form>
     <div class="kpis">
       <div class="kpi"><span>Aktive Verträge</span><b>${vs.length}</b></div>
@@ -170,8 +203,9 @@ function uebersicht() {
       <div class="kpi"><span>Restschuld Darlehen</span><b>${c.fmtEuro(restschuld)}</b></div>
       <div class="kpi ${fristen.some((f) => c.tageBis(f.sp) <= 31) ? 'warn' : ''}"><span>Fristen in 120 Tagen</span><b>${fristen.length}</b></div>
     </div>
-    ${pruefen.length ? `<div class="karte hinweis"><b>${pruefen.length} neu erfasste Verträge/Nachträge bitte prüfen${offeneNachtraege.length ? ` (${offeneNachtraege.length} Nachtrag ohne Zuordnung)` : ''}:</b>
-      <ul>${pruefen.map((v) => `<li><a href="#/vertrag/${v.id}">${esc(titelVon(v))}</a></li>`).join('')}</ul></div>` : ''}
+    ${hinweisKarte}
+    ${pruefen.length ? `<details class="karte hinweis"${pruefen.length <= 5 ? ' open' : ''}><summary><b>${pruefen.length} neu erfasste Verträge/Nachträge bitte prüfen${offeneNachtraege.length ? ` (${offeneNachtraege.length} Nachtrag ohne Zuordnung)` : ''}</b></summary>
+      <ul>${pruefen.map((v) => `<li><a href="#/vertrag/${v.id}">${esc(titelVon(v))}</a></li>`).join('')}</ul></details>` : ''}
     <div class="raster2">
       <section class="karte">
         <h2>Anstehende Kündigungsfristen</h2>
@@ -184,6 +218,7 @@ function uebersicht() {
         <ul class="liste">${Object.entries(proKat).sort().map(([k, n]) => `<li><a href="#/vertraege/${encodeURIComponent(k)}"><span>${esc(k)}</span><b>${n}</b></a></li>`).join('') || '<p class="leer">Noch keine Verträge.</p>'}</ul>
       </section>
     </div>`;
+  $('#b-aktualisieren') && ($('#b-aktualisieren').onclick = () => aktualisieren());
   $('#f-suche').onsubmit = (e) => {
     e.preventDefault();
     Object.assign(filter, { q: String(new FormData(e.target).get('q') || ''), kat: '', fokus: true });
@@ -273,6 +308,20 @@ function feldWert(f, wert) {
   return f.typ === 'euro' ? c.fmtEuro(c.num(wert)) : f.typ === 'datum' ? c.fmtDatum(wert) : f.typ === 'prozent' ? c.fmtProzent(wert) : esc(wert);
 }
 
+// Hinweise oben im Vertrag: anstehende Entscheidung und offene kritische Punkte (auch aus Unterlagen und Nachträgen).
+function hinweisBox(v) {
+  const f = hinweise.fristHinweis(v);
+  const quellen = [v, ...(v._unterlagen || []), ...(v._nachtraege || [])];
+  const punkte = quellen.flatMap((q) => hinweise.offenePunkte(q).map((t) => ({ q, t })));
+  if (!f && !punkte.length) return '';
+  const tipp = (v.analyse?.verbesserungen || [])[0];
+  return `<section class="karte hinweise"><h2>Hinweise</h2>
+    ${f ? `<p class="rot"><b>Bis ${c.fmtDatum(f.sp)} entscheiden</b> (noch ${f.tage} Tage): Kündigung zum ${c.fmtDatum(f.termin)}${c.jahresbeitrag(v) ? `, Jahresbeitrag ${c.fmtEuro(c.jahresbeitrag(v))}` : ''}.${tipp ? ` ${esc(tipp)}` : ''}</p>` : ''}
+    ${punkte.length ? `<ul class="punkte">${punkte.map(({ q, t }) => `<li><span>${q !== v ? `<i>${esc(istNachtrag(q) ? 'Nachtrag' : q.art || 'Unterlage')}:</i> ` : ''}${esc(t)}</span>
+      <button class="klein" data-erledigt="${esc(t)}" data-quelle="${esc(q.id)}">Erledigt</button></li>`).join('')}</ul>` : ''}
+  </section>`;
+}
+
 function detail(id) {
   const v = store.state.vertraege.find((x) => x.id === id);
   if (!v) { main().innerHTML = '<p class="leer">Vertrag nicht gefunden.</p>'; return; }
@@ -324,6 +373,11 @@ function detail(id) {
         .map((x) => `<option value="${esc(x.id)}">${esc(titelVon(x))}${x.vertragsnummer ? ` (${esc(x.vertragsnummer)})` : ''}${x.objekt || x.kennzeichen ? ` · ${esc(x.kennzeichen || x.objekt)}` : ''}</option>`).join('')}</select><button class="primaer">Zuordnen</button></form></div>
       <section class="karte"><h2>Nachtrag</h2>${nachtragsBlock(v, false)}</section>` : ''}
     <section class="karte ueberblick"><h2>Kurzüberblick</h2><p>${esc(kurzueberblick(v))}</p></section>
+    ${hinweisBox(v)}
+    ${v._unterlagen?.length ? `<section class="karte"><h2>Unterlagen (${v._unterlagen.length})</h2>${v._unterlagen.map((u) => `<div class="nachtrag">
+        <div class="nt-kopf"><b>${esc(u.art || 'Unterlage')}</b>${u.anbieter ? `<span class="klein">${esc(u.anbieter)}</span>` : ''}</div>
+        ${u.analyse?.zusammenfassung ? `<p>${esc(u.analyse.zusammenfassung)}</p>` : ''}
+        ${u.quelle_id || u.quelldatei ? `<button class="klein" data-doc="${esc(u.quelle_id || u.quelldatei)}">Dokument öffnen</button>` : ''}</div>`).join('')}</section>` : ''}
     ${v._nachtraege?.length ? `<section class="karte"><h2>Nachträge (${v._nachtraege.length})</h2>${[...v._nachtraege].reverse().map((n) => nachtragsBlock(n)).join('')}</section>` : ''}
     ${sp ? `<div class="karte frist"><div><span>Kündigung spätestens</span><b>${c.fmtDatum(sp)}</b></div><div><span>Vertragsablauf</span><b>${c.fmtDatum(termin)}</b></div><div><span>Erinnerung</span><b>${c.fmtDatum(c.erinnerungsdatum(v))}</b></div></div>` : ''}
     ${a.zusammenfassung || a.kritisch?.length || a.verbesserungen?.length ? `
@@ -346,6 +400,13 @@ function detail(id) {
   $('#b-gek') && ($('#b-gek').onclick = () => setz({ status: 'gekündigt', gekuendigt_am: heute() }, 'Als gekündigt markiert.'));
   $('#b-doc') && ($('#b-doc').onclick = () => versuch(async () => window.open(await dbx.temporaryLink(v.quelle_id || v.quelldatei), '_blank')));
   const roh = (nid) => store.state.roh.find((x) => x.id === nid);
+  for (const b of document.querySelectorAll('[data-erledigt]')) b.onclick = async () => {
+    const x = roh(b.dataset.quelle);
+    if (!x) return;
+    x.hinweise_erledigt = [...new Set([...(x.hinweise_erledigt || []), b.dataset.erledigt])];
+    await versuch(() => store.speichere(x), 'Als erledigt vermerkt.');
+    detail(id);
+  };
   for (const b of document.querySelectorAll('[data-doc]')) b.onclick = () => versuch(async () => window.open(await dbx.temporaryLink(b.dataset.doc), '_blank'));
   for (const b of document.querySelectorAll('[data-loesen]')) b.onclick = async () => {
     if (!confirm('Nachtrag von diesem Vertrag lösen? Er erscheint dann als eigener Eintrag zum Zuordnen.')) return;
