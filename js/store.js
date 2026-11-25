@@ -87,7 +87,7 @@ export async function synchronisiere() {
     throw new Error(syncFehler);
   }
   if (fehlerListe.length) syncFehler = `${fehlerListe.length} von ${dateien.length} Dateien konnten nicht geladen werden (z. B. ${fehlerListe[0].datei}): ${fehlerListe[0].fehler}`;
-  if (!dateien.length) syncFehler = `Im Ordner „${VERZ()}“ hat die App keine Vertragsdateien gefunden.`;
+  if (!dateien.length) syncFehler = `Im Ordner „${VERZ()}“ hat die App keine Vertragsdateien gefunden. Falls die Dateien in deiner Dropbox dort liegen, hat die Dropbox-App vermutlich nur Zugriff auf ihren eigenen App-Ordner (Dropbox → Apps) statt auf die ganze Dropbox.`;
   vertraege = neu;
   letzteSync = new Date();
   geaendert();

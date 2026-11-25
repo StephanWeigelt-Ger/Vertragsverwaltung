@@ -65,7 +65,7 @@ export const DEMO = [
   },
   {
     id: 'demo-n1', dokumenttyp: 'Nachtrag', zu_vertrag: null, bezug_vertragsnummer: 'KF-55-1200', kategorie: 'Versicherung', art: 'KFZ',
-    anbieter: 'Auto-Versicherung AG', kennzeichen: 'LEV-SW 123', quelldatei: '/privat/KI - Zugriff/Nachtrag KFZ 2027.pdf',
+    anbieter: 'Auto-Versicherung AG', kennzeichen: 'LEV-SW 123', quelldatei: '/KI - Zugriff/Nachtrag KFZ 2027.pdf',
     nachtrag: {
       datum: '2026-11-02', gueltig_ab: '2027-01-01', titel: 'Beitragsanpassung 2027',
       inhalt: 'Neue Typklasse und Regionalklasse ab 2027, der Jahresbeitrag steigt. Selbstbehalt Vollkasko auf Wunsch auf 300 € gesenkt.',

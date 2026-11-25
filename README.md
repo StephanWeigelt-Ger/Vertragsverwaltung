@@ -24,10 +24,10 @@ Die App spricht direkt mit deiner Dropbox, alle Daten bleiben dort.
 
 | Ordner | Inhalt |
 |---|---|
-| `/privat/KI - Zugriff/` | Eingang: Hier neue Verträge ablegen (PDF, Fotos, Word; Unterordner erlaubt) |
-| `/privat/KI - Zugriff/_Vertragsdaten/vertraege/` | Eine JSON-Datei pro Vertrag |
-| `/privat/KI - Zugriff/_Vertragsdaten/vertragsfristen.ics` | Kalender für das Outlook-Abo |
-| `/privat/KI - Zugriff/_Vertragsdaten/auswertungen/` | Exportierte PDF- und Excel-Dateien |
+| `/Apps/Verträge/KI - Zugriff/` | Eingang: Hier neue Verträge ablegen (PDF, Fotos, Word; Unterordner erlaubt) |
+| `/Apps/Verträge/KI - Zugriff/_Vertragsdaten/vertraege/` | Eine JSON-Datei pro Vertrag |
+| `/Apps/Verträge/KI - Zugriff/_Vertragsdaten/vertragsfristen.ics` | Kalender für das Outlook-Abo |
+| `/Apps/Verträge/KI - Zugriff/_Vertragsdaten/auswertungen/` | Exportierte PDF- und Excel-Dateien |
 
 ## Analyse neuer Verträge
 
