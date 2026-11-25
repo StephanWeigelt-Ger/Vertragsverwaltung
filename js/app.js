@@ -13,6 +13,13 @@ import * as hinweise from './hinweise.js';
 
 const $ = (s, el = document) => el.querySelector(s);
 const main = () => $('#main');
+
+// Passwortfelder sind Textfelder mit Punkten, damit iPhone/iPad nicht „Starkes Passwort verwenden?“ fragt.
+// Browser ohne Punkt-Darstellung bekommen wieder ein normales Passwortfeld.
+if (!(window.CSS && CSS.supports && CSS.supports('-webkit-text-security', 'disc'))) {
+  new MutationObserver(() => document.querySelectorAll('input.pw[type="text"]').forEach((i) => { i.type = 'password'; }))
+    .observe(document.documentElement, { childList: true, subtree: true });
+}
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
 const heute = () => c.isoDate(new Date());
 
@@ -62,13 +69,13 @@ function zeigeSperre() {
     ${neu ? `
       <p>Lege ein Passwort für diese App auf diesem Gerät fest. Danach kannst du Face ID bzw. Touch ID einrichten.</p>
       <form id="f-setup" class="karte">
-        <label>Passwort<input type="password" name="pw" autocomplete="new-password" minlength="8" required></label>
-        <label>Passwort wiederholen<input type="password" name="pw2" autocomplete="new-password" required></label>
+        <label>Passwort<input type="text" class="pw" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore name="pw" minlength="8" required></label>
+        <label>Passwort wiederholen<input type="text" class="pw" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore name="pw2" required></label>
         <button class="primaer">Einrichten</button>
       </form>` : `
       <form id="f-unlock" class="karte">
         ${lock.hasPasskey() ? '<button type="button" id="b-faceid" class="primaer gross">Mit Face ID entsperren</button><div class="oder">oder</div>' : ''}
-        <label>Passwort<input type="password" name="pw" autocomplete="current-password" required></label>
+        <label>Passwort<input type="text" class="pw" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore name="pw" required></label>
         <button class="${lock.hasPasskey() ? '' : 'primaer'}">Entsperren</button>
       </form>
       <button class="link" id="b-reset">Passwort vergessen? App auf diesem Gerät zurücksetzen</button>`}
@@ -619,7 +626,7 @@ function einstellungen() {
         ? '<p>Face ID / Touch ID ist eingerichtet.</p><button id="b-pk-weg">Face ID entfernen</button>'
         : '<p>Richte Face ID (iPhone/iPad) bzw. Touch ID oder Windows Hello (PC) ein.</p><button id="b-pk" class="primaer">Face ID einrichten</button>')
         : '<p>Dieses Gerät unterstützt keine biometrische Anmeldung im Browser.</p>'}
-      <form id="f-pw" class="zeile"><input type="password" name="pw" placeholder="Neues Passwort" minlength="8" autocomplete="new-password"><button>Passwort ändern</button></form>
+      <form id="f-pw" class="zeile"><input type="text" class="pw" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore name="pw" placeholder="Neues Passwort" minlength="8"><button>Passwort ändern</button></form>
       <button id="b-sperren">Jetzt sperren</button>
     </section>
     <section class="karte"><h2>Erinnerungen</h2>
@@ -632,7 +639,7 @@ function einstellungen() {
     <section class="karte"><h2>Sofort-Analyse (Claude)</h2>
       <p>Mit einem Anthropic-API-Schlüssel analysiert die App neue Dokumente auf Knopfdruck (ca. 2 bis 10 Cent pro Vertrag). Der Schlüssel wird verschlüsselt nur auf diesem Gerät gespeichert.
       Schlüssel erstellen: <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">console.anthropic.com</a></p>
-      <form id="f-key" class="zeile"><input type="password" name="k" placeholder="${e.anthropicKey ? 'gespeichert (••••' + esc(e.anthropicKey.slice(-4)) + ')' : 'sk-ant-…'}" autocomplete="off"><button>Speichern</button>${e.anthropicKey ? '<button type="button" id="b-key-weg" class="gefahr">Entfernen</button>' : ''}</form>
+      <form id="f-key" class="zeile"><input type="text" class="pw" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore name="k" placeholder="${e.anthropicKey ? 'gespeichert (••••' + esc(e.anthropicKey.slice(-4)) + ')' : 'sk-ant-…'}" ><button>Speichern</button>${e.anthropicKey ? '<button type="button" id="b-key-weg" class="gefahr">Entfernen</button>' : ''}</form>
     </section>
     <section class="karte"><h2>App installieren</h2>
       <p><b>iPhone/iPad:</b> In Safari auf <i>Teilen</i> → <i>Zum Home-Bildschirm</i>. <b>PC:</b> In Chrome/Edge in der Adresszeile auf das Installieren-Symbol.</p>
