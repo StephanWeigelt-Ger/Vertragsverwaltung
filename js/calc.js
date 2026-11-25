@@ -299,7 +299,7 @@ export function kalenderICS(vertraege, heute = new Date()) {
       'END:VEVENT');
   };
   for (const v of vertraege) {
-    if (v.status === 'beendet' || v.status === 'gekündigt') continue;
+    if (v.status === 'beendet' || v.status === 'gekündigt' || v.dokumenttyp === 'Nachtrag') continue;
     // Darlehen: Zinsbindungsende 6 Monate vorher melden
     const zb = parseDate(v.darlehen?.zinsbindung_bis);
     if (zb) {

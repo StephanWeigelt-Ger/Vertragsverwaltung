@@ -167,3 +167,14 @@ details.tipp summary { cursor: pointer; width: max-content; }
 details.tipp p { margin: .4rem 0 0; }
 .fund { display: flex; flex-direction: column; gap: .1rem; margin-top: .35rem; padding: .35rem .5rem; background: var(--gelb-bg); border-radius: 8px; font-size: .8rem; overflow-wrap: anywhere; }
 .fund i { color: var(--leise); font-style: normal; }
+
+.ueberblick { background: var(--blau-bg); border-color: transparent; }
+.ueberblick p { margin: 0; font-size: 1rem; line-height: 1.55; }
+.nachtrag { border-left: 3px solid var(--akzent); padding: .2rem 0 .2rem .8rem; margin: .8rem 0; }
+.nachtrag:first-of-type { margin-top: 0; }
+.nt-kopf { display: flex; flex-wrap: wrap; gap: .2rem .7rem; align-items: baseline; }
+.nachtrag p { margin: .35rem 0; }
+.aenderungen { margin: .3rem 0; padding-left: 1.1rem; font-size: .9rem; }
+.aenderungen span { color: var(--leise); }
+.aenderungen s { color: var(--leise); }
+.klein { font-size: .85rem; }

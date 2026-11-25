@@ -63,5 +63,26 @@ export const DEMO = [
     beginn: '2010-01-01', beitrag: 689.12, beitrag_rhythmus: 'monatlich', selbstbehalt: 1200, status: 'aktiv',
     kuendigungsfrist_monate: 3, hauptfaelligkeit: '2027-01-01', verlaengerung_monate: 12,
   },
+  {
+    id: 'demo-n1', dokumenttyp: 'Nachtrag', zu_vertrag: null, bezug_vertragsnummer: 'KF-55-1200', kategorie: 'Versicherung', art: 'KFZ',
+    anbieter: 'Auto-Versicherung AG', kennzeichen: 'LEV-SW 123', quelldatei: '/privat/KI - Zugriff/Nachtrag KFZ 2027.pdf',
+    nachtrag: {
+      datum: '2026-11-02', gueltig_ab: '2027-01-01', titel: 'Beitragsanpassung 2027',
+      inhalt: 'Neue Typklasse und Regionalklasse ab 2027, der Jahresbeitrag steigt. Selbstbehalt Vollkasko auf Wunsch auf 300 € gesenkt.',
+      aenderungen: [
+        { feld: 'beitrag', bezeichnung: 'Beitrag', alt: '1236,00 €', neu: 1318.4 },
+        { feld: 'selbstbehalt_vk', bezeichnung: 'Selbstbehalt Vollkasko', alt: '500 €', neu: 300 },
+      ],
+    },
+  },
+  {
+    id: 'demo-n2', dokumenttyp: 'Nachtrag', bezug_vertragsnummer: 'GB-4711-01', kategorie: 'Versicherung', art: 'Gebäude', anbieter: 'Muster Versicherung AG',
+    nachtrag: { datum: '2025-12-10', gueltig_ab: '2026-01-01', titel: 'Einschluss Photovoltaik', inhalt: 'Die Photovoltaikanlage auf dem Dach ist bis 25.000 € mitversichert.',
+      aenderungen: [{ feld: 'deckung', bezeichnung: 'Deckung', alt: 'Feuer, Leitungswasser, Sturm/Hagel, Elementar', neu: 'Feuer, Leitungswasser, Sturm/Hagel, Elementar, Photovoltaik bis 25.000 €' }] },
+  },
+  {
+    id: 'demo-n3', dokumenttyp: 'Nachtrag', kategorie: 'Versicherung', art: 'Rechtsschutz', anbieter: 'Unbekannt Versicherung',
+    nachtrag: { datum: '2026-10-01', titel: 'Adressänderung', inhalt: 'Neue Anschrift des Versicherungsnehmers übernommen.' },
+  },
 ];
 for (const v of DEMO) v.demo = true;

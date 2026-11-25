@@ -1,7 +1,8 @@
 // Vordefinierte Auswertungen. Jede liefert { titel, untertitel, spalten, zeilen, gruppe?, fussnote? }.
 import * as c from './calc.js';
+import { aendWert } from './nachtraege.js';
 
-const aktiv = (v) => v.status !== 'beendet';
+const aktiv = (v) => v.status !== 'beendet' && v.dokumenttyp !== 'Nachtrag';
 const versicherungen = (vs) => vs.filter((v) => v.kategorie === 'Versicherung' && aktiv(v));
 const istArt = (v, ...worte) => worte.some((w) => String(v.art || '').toLowerCase().includes(w));
 
@@ -110,6 +111,20 @@ export const BERICHTE = {
         { k: 'betrag', label: 'Betrag', typ: 'euro', summe: true }, { k: 'glaeubiger', label: 'Sicherungsnehmer' }, { k: 'vertragsnummer', label: 'Darlehen' },
         { k: 'restschuld', label: 'Restschuld Darlehen', typ: 'euro' }],
       zeilen: c.sicherheiten(vs.filter(aktiv)),
+    }),
+  },
+  nachtraege: {
+    titel: 'Nachträge', gruppe: 'vertrag',
+    bauen: (vs) => ({
+      spalten: [{ k: 'datum', label: 'Datum', typ: 'datum' }, { k: 'gueltig_ab', label: 'Gültig ab', typ: 'datum' }, { k: 'titel', label: 'Nachtrag', breite: 26 },
+        { k: 'inhalt', label: 'Wesentlicher Inhalt', breite: 50 }, { k: 'aenderungen', label: 'Änderungen', breite: 40 }],
+      zeilen: vs.flatMap((v) => (v.dokumenttyp === 'Nachtrag' ? [{ ...v, _nachtraege: [v] }] : [v]).flatMap((x) => (x._nachtraege || []).map((n) => ({
+        id: x.id,
+        vertrag: x.dokumenttyp === 'Nachtrag' ? `Ohne Zuordnung · ${x.anbieter || ''}` : [x.art || x.kategorie, x.anbieter, x.vertragsnummer && `Nr. ${x.vertragsnummer}`, x.kennzeichen || x.objekt].filter(Boolean).join(' · '),
+        datum: n.nachtrag?.datum, gueltig_ab: n.nachtrag?.gueltig_ab, titel: n.nachtrag?.titel || 'Nachtrag',
+        inhalt: n.nachtrag?.inhalt || n.analyse?.zusammenfassung,
+        aenderungen: (n.nachtrag?.aenderungen || []).map((a) => `${a.bezeichnung || a.feld}: ${aendWert(a.alt, a.feld) || '–'} → ${aendWert(a.neu, a.feld) || '–'}`).join('; '),
+      })))).sort((a, b) => String(b.datum || '').localeCompare(String(a.datum || ''))),
     }),
   },
   restlaufzeiten: {

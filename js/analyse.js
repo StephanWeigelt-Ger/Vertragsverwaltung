@@ -2,6 +2,17 @@
 // (siehe ANALYSE.md, wird aus dieser Datei erzeugt).
 
 export const SCHEMA_BESCHREIBUNG = `{
+  "dokumenttyp": "Vertrag | Nachtrag (Nachtrag/Änderung/Ergänzung zu einem bestehenden Vertrag, z. B. Nachtrag zum Versicherungsschein, Beitragsanpassung, Fahrzeugwechsel, Zinsanpassung)",
+  "bezug_vertragsnummer": "bei Nachträgen: Nummer des geänderten Vertrags/Versicherungsscheins",
+  "nachtrag": {
+    "datum": "YYYY-MM-DD Datum des Nachtrags (Ausstellung)",
+    "gueltig_ab": "YYYY-MM-DD ab wann die Änderung gilt",
+    "titel": "kurz, z. B. 'Beitragsanpassung 2027' oder 'Fahrzeugwechsel'",
+    "inhalt": "1-3 Sätze: wesentlicher Inhalt des Nachtrags",
+    "aenderungen": [
+      { "feld": "Schlüssel aus diesem Schema, z. B. beitrag, selbstbehalt_vk, kennzeichen, darlehen.zinssatz", "bezeichnung": "lesbarer Name", "alt": "bisheriger Wert oder null", "neu": "neuer Wert" }
+    ]
+  },
   "kategorie": "Versicherung | Darlehen | Energie | Telekommunikation | Miete/Pacht | Leasing | Abo/Mitgliedschaft | Sonstiges",
   "art": "z. B. KFZ, Gebäude, Hausrat, Privathaftpflicht, Krankenversicherung, Strom, Gas, Annuitätendarlehen, Mobilfunk",
   "anbieter": "Versicherer / Bank / Versorger",
@@ -78,6 +89,9 @@ Regeln:
 - Unbekannte Werte sind null. Erfinde nichts. Felder, die für die Vertragsart nicht passen, weglassen oder null.
 - Datumsangaben im Format YYYY-MM-DD, Beträge als Zahl mit Punkt als Dezimaltrenner (z. B. 1234.56).
 - Bei mehreren Verträgen in einem Dokument: gib {"vertraege": [ ... ]} zurück.
+- Ist das Dokument ein Nachtrag zu einem bestehenden Vertrag, setze "dokumenttyp": "Nachtrag", fülle "bezug_vertragsnummer" und "nachtrag"
+  (Datum, gültig ab, Titel, wesentlicher Inhalt, jede geänderte Angabe mit altem und neuem Wert) und erfasse zusätzlich anbieter, art, kategorie, objekt/kennzeichen.
+  Die übrigen Felder nur, soweit der Nachtrag sie nennt. Sonst "dokumenttyp": "Vertrag" und "nachtrag" weglassen.
 - Bei Darlehen die Sicherheiten vollständig erfassen (Grundschulden mit Betrag und Grundbuchangaben).
 - Die Analyse schreibst du auf Deutsch, knapp und konkret für den Vertragsinhaber.
 - Sensible Daten wie vollständige IBAN oder Gesundheitsangaben nicht übernehmen.

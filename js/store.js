@@ -4,13 +4,21 @@ import * as dbx from './dropbox.js';
 import * as lock from './lock.js';
 import { kalenderICS } from './calc.js';
 import { DEMO } from './demo.js';
+import { zusammenfuehren, istNachtrag } from './nachtraege.js';
 
 const VERZ = () => CONFIG.daten + '/vertraege';
-let vertraege = [];
+let vertraege = []; // gespeicherte Dateien (Verträge und Nachträge)
+let ansicht = null; // Verträge mit angehängten Nachträgen
 let einstellungen = {};
 let demo = false;
 
-export const state = { get vertraege() { return vertraege; }, get demo() { return demo; }, get einstellungen() { return einstellungen; } };
+const geaendert = () => { ansicht = null; };
+export const state = {
+  get vertraege() { return (ansicht ||= zusammenfuehren(vertraege)); },
+  get roh() { return vertraege; },
+  get demo() { return demo; },
+  get einstellungen() { return einstellungen; },
+};
 
 export async function ladeEinstellungen() {
   einstellungen = (await lock.decryptJSON(localStorage.getItem('vv.settings')).catch(() => null)) || {};
@@ -37,11 +45,12 @@ export async function ladeCache() {
   if (c) vertraege = c.vertraege;
   demo = !dbx.isConnected();
   if (demo && !vertraege.length) vertraege = structuredClone(DEMO);
+  geaendert();
   return vertraege;
 }
 
 export async function synchronisiere() {
-  if (!dbx.isConnected()) { demo = true; if (!vertraege.length) vertraege = structuredClone(DEMO); return vertraege; }
+  if (!dbx.isConnected()) { demo = true; if (!vertraege.length) vertraege = structuredClone(DEMO); geaendert(); return vertraege; }
   if (demo) { vertraege = []; demo = false; }
   const dateien = (await dbx.listFolder(VERZ())).filter((e) => e['.tag'] === 'file' && e.name.endsWith('.json'));
   const neu = [];
@@ -53,6 +62,7 @@ export async function synchronisiere() {
     } catch (e) { console.warn('Datei unlesbar', f.path_display, e); }
   }));
   vertraege = neu;
+  geaendert();
   await cacheSchreiben();
   return vertraege;
 }
@@ -68,16 +78,19 @@ export function neueId() {
 }
 
 function dateiname(v) {
-  const teile = [v.kategorie, v.art, v.anbieter, v.vertragsnummer].filter(Boolean).join('_')
+  const teile = (istNachtrag(v) ? ['Nachtrag', v.anbieter, v.bezug_vertragsnummer || v.vertragsnummer] : [v.kategorie, v.art, v.anbieter, v.vertragsnummer]).filter(Boolean).join('_')
     .replace(/[\\/:*?"<>|]/g, '').replace(/\s+/g, '-').slice(0, 80);
   return `${VERZ()}/${teile || 'vertrag'}__${v.id}.json`;
 }
 
-export async function speichere(v) {
+// Speichert einen Vertrag oder Nachtrag. Felder mit "_" (z. B. angehängte Nachträge) werden nicht gespeichert.
+export async function speichere(eingabe) {
+  const v = Object.fromEntries(Object.entries(eingabe).filter(([k]) => !k.startsWith('_') || k === '_datei'));
   v.aktualisiert = new Date().toISOString();
   if (!v.id) { v.id = neueId(); v.erstellt = v.aktualisiert; }
   const i = vertraege.findIndex((x) => x.id === v.id);
-  if (i >= 0) vertraege[i] = v; else vertraege.push(v);
+  if (i >= 0) { v._datei ||= vertraege[i]._datei; vertraege[i] = v; } else vertraege.push(v);
+  geaendert();
   if (!demo) {
     const ziel = dateiname(v);
     const { _datei, ...daten } = v;
@@ -87,11 +100,14 @@ export async function speichere(v) {
     await cacheSchreiben();
     kalenderAktualisieren().catch((e) => console.warn(e));
   }
-  return v;
+  return state.vertraege.find((x) => x.id === v.id) || v;
 }
 
 export async function loesche(v) {
+  const roh = vertraege.find((x) => x.id === v.id);
+  v = { ...v, _datei: v._datei || roh?._datei };
   vertraege = vertraege.filter((x) => x.id !== v.id);
+  geaendert();
   if (!demo && v._datei) await dbx.remove(v._datei);
   if (!demo) { await cacheSchreiben(); kalenderAktualisieren().catch(() => {}); }
 }
@@ -114,7 +130,7 @@ export const KALENDER = () => CONFIG.daten + '/vertragsfristen.ics';
 
 export async function kalenderAktualisieren() {
   if (!dbx.isConnected()) return null;
-  await dbx.upload(KALENDER(), kalenderICS(vertraege), 'text/calendar');
+  await dbx.upload(KALENDER(), kalenderICS(state.vertraege), 'text/calendar');
   return KALENDER();
 }
 
