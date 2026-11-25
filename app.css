@@ -49,7 +49,11 @@ body.gesperrt main { margin: 0 auto; max-width: 420px; }
   nav .i { font-size: 1.2rem; }
   main { margin: 0; padding: calc(1rem + env(safe-area-inset-top)) 16px calc(90px + env(safe-area-inset-bottom)); }
   .demo { margin: 0; padding: calc(.4rem + env(safe-area-inset-top)) 16px .4rem; }
-  .demo + main { padding-top: 1rem; }
+  .demo:not([hidden]) + main { padding-top: 1rem; }
+  /* iPhone: Statusleiste (Uhr, Notch) bekommt einen festen Hintergrund, damit nichts darunter verschwindet */
+  body::before { content: ""; position: fixed; inset: 0 0 auto 0; height: env(safe-area-inset-top); background: var(--marke); z-index: 6; }
+  .kopf { flex-wrap: wrap; }
+  .kopf .aktionen button, .kopf .aktionen .knopf { min-height: 44px; }
   h1 { font-size: 1.35rem; }
 }
 
