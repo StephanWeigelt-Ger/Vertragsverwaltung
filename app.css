@@ -196,3 +196,15 @@ ul.punkte button { flex: none; }
 .karte.fehler { background: var(--rot-bg); color: var(--rot); border-color: transparent; }
 .karte.fehler p { margin: .3rem 0 0; color: inherit; }
 details.karte > summary { cursor: pointer; }
+
+/* iPhone: nichts darf breiter als der Bildschirm werden (Safari gibt Eingabefeldern eine Mindestbreite) */
+html, body { max-width: 100%; overflow-x: hidden; }
+.suchleiste input { min-width: 0; width: 100%; }
+.suchleiste button { flex: none; }
+.kopf > * { min-width: 0; }
+@media (max-width: 760px) {
+  main { width: 100%; box-sizing: border-box; overflow-x: hidden; }
+  .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .raster2, .karten { grid-template-columns: minmax(0, 1fr); }
+  .kpi b { font-size: 1.25rem; overflow-wrap: anywhere; }
+}

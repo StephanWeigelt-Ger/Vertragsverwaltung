@@ -60,27 +60,34 @@ export async function synchronisiere() {
   let fehler;
   try { fehler = await dbx.pruefeOrdner(CONFIG.eingang); } catch (e) { syncFehler = e.message || String(e); throw e; }
   if (fehler) { syncFehler = fehler; throw new Error(fehler); }
-  const dateien = (await dbx.listFolder(VERZ())).filter((e) => e['.tag'] === 'file' && e.name.endsWith('.json'));
+  const dateien = (await dbx.listFolder(VERZ())).filter((e) => e['.tag'] === 'file' && e.name.toLowerCase().endsWith('.json'));
   const neu = [];
-  let unlesbar = 0;
-  // Höchstens 4 Downloads gleichzeitig, sonst bremst Dropbox (Fehler 429).
+  const fehlerListe = [];
+  // Höchstens 4 Downloads gleichzeitig; nur bei Drosselung (429) oder Serverfehlern erneut versuchen.
   const warteschlange = [...dateien];
   const arbeiter = async () => {
     for (let f; (f = warteschlange.shift());) {
-      for (let versuch = 0; versuch < 3; versuch++) {
+      for (let versuch = 0; ; versuch++) {
         try {
           const v = JSON.parse(await (await dbx.download(f.path_lower)).text());
           v._datei = f.path_display;
           neu.push(v);
           break;
         } catch (e) {
-          if (versuch === 2) { unlesbar++; console.warn('Datei unlesbar', f.path_display, e); } else await new Promise((r) => setTimeout(r, 800 * (versuch + 1)));
+          const nochmal = (e.status === 429 || e.status >= 500 || !e.status) && versuch < 2;
+          if (!nochmal) { fehlerListe.push({ datei: f.name, fehler: e.message || String(e) }); console.warn('Datei unlesbar', f.path_display, e); break; }
+          await new Promise((r) => setTimeout(r, 1000 * (versuch + 1)));
         }
       }
     }
   };
   await Promise.all([1, 2, 3, 4].map(arbeiter));
-  if (unlesbar) console.warn(unlesbar + ' Dateien nicht lesbar');
+  if (dateien.length && !neu.length) {
+    syncFehler = `Keine der ${dateien.length} Vertragsdateien konnte geladen werden. ${fehlerListe[0]?.fehler || ''}`;
+    throw new Error(syncFehler);
+  }
+  if (fehlerListe.length) syncFehler = `${fehlerListe.length} von ${dateien.length} Dateien konnten nicht geladen werden (z. B. ${fehlerListe[0].datei}): ${fehlerListe[0].fehler}`;
+  if (!dateien.length) syncFehler = `Im Ordner „${VERZ()}“ hat die App keine Vertragsdateien gefunden.`;
   vertraege = neu;
   letzteSync = new Date();
   geaendert();
