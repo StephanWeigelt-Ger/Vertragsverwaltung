@@ -208,3 +208,7 @@ html, body { max-width: 100%; overflow-x: hidden; }
   .raster2, .karten { grid-template-columns: minmax(0, 1fr); }
   .kpi b { font-size: 1.25rem; overflow-wrap: anywhere; }
 }
+/* iPhone: Safari vergrößert die Seite beim Tippen in Felder unter 16 px Schrift und bleibt dann gezoomt */
+@media (max-width: 760px) {
+  input, select, textarea { font-size: 16px; }
+}
